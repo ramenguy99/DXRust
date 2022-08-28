@@ -1,0 +1,26 @@
+TODO:
+- Reference rasterizer with same resources
+    - setup matrices in constant buffer
+    - proper pixel shader
+    - debug / check everything
+
+- Support more complex scenes 
+    - better api for building tlas/blas
+    - secondary rays / recursion
+    - PBR
+
+- Imgui keyboard
+- Smooth resizing
+    - Resizing is not smooth because DispatchMessage blocks while resizing
+    - To support smooth resizing we would need to draw from the wndproc
+    - This requires some restructuring, basically the main loop would have to
+      execute inside a closure that we can call from the wndproc
+
+
+- D3D12 refactoring (ideally complete safe API for all d3d12 features):
+    - error callback with panic instead of breakpoint
+    - scoped barriers (closures or immutable transparent type with drop)
+    - command list / render pass abstraction (render pass on top of list?)
+    - Graphics pipeline state helpers
+    - Results everywhere (ours and map windows-rs results or just windows-rs?)
+
