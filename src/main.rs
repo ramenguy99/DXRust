@@ -3,7 +3,7 @@
 use core::mem::{size_of, size_of_val};
 use math::vec::Vec3;
 use math::mat::{Mat4, self};
-use mesh::Mesh;
+use mesh::{Mesh, Scene};
 
 mod win32;
 mod d3d12;
@@ -37,11 +37,9 @@ struct SceneConstants {
 
     projection: Mat4,
     view: Mat4,
-    model: Mat4,
-    normal: Mat4,
 }
 
-trait Scene {
+trait Pipeline {
     fn resize(&mut self, d3d12: &d3d12::Context, width: u32, height:u32);
 
     fn render(&mut self, d3d12: &d3d12::Context, frame: &d3d12::Frame, 
@@ -59,42 +57,137 @@ struct Raster {
 
     pso: d3d12::ID3D12PipelineState,
     rs: d3d12::ID3D12RootSignature,
+    cs: d3d12::ID3D12CommandSignature,
 
-    vertices_count: usize,
-    indices_count: usize,
+    commands: d3d12::ID3D12Resource,
+
     positions: d3d12::ID3D12Resource,
     normals: d3d12::ID3D12Resource,
     indices: d3d12::ID3D12Resource,
 
+    meshes_count: usize,
+    vertices_count: usize,
+    indices_count: usize,
+
+    mesh_constants: d3d12::ID3D12Resource,
+
     constant_buffer: d3d12::PerFrameConstantBuffer,
+}
+
+struct MeshConstants {
+    transform: Mat4,
+}
+
+#[repr(C)]
+struct DrawArgs {
+    index: u32,
+    args: d3d12::D3D12_DRAW_INDEXED_ARGUMENTS,
 }
 
 impl Raster {
     fn init(window: &win32::Window, d3d12: &d3d12::Context, 
-                mesh: &Mesh) -> Self {
+            scene: &Scene) -> Self {
 
         let rs = 
             d3d12.create_root_signature_from_shader(&shaders::MESH_VS)
                 .expect("Failed to create root signature");
 
+        let argument_descs = [
+            d3d12::D3D12_INDIRECT_ARGUMENT_DESC {
+                Type: d3d12::D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT,
+                Anonymous: d3d12::D3D12_INDIRECT_ARGUMENT_DESC_0 {
+                    Constant: d3d12::D3D12_INDIRECT_ARGUMENT_DESC_0_1 {
+                        RootParameterIndex: 1,
+                        DestOffsetIn32BitValues: 0,
+                        Num32BitValuesToSet: 1,
+                    },
+                },
+            },
+            d3d12::D3D12_INDIRECT_ARGUMENT_DESC {
+                Type: d3d12::D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
+                ..Default::default()
+            },
+        ];
+
+        let cs = d3d12.create_command_signature(&rs, size_of::<DrawArgs>() 
+                                                as u32, &argument_descs)
+            .expect("Failed to create command signature");
+
+        let mut commands_buf: Vec<DrawArgs> = Vec::new();
+        let mut positions_buf: Vec<Vec3> = Vec::new();
+        let mut normals_buf: Vec<Vec3> = Vec::new();
+        let mut indices_buf: Vec<u32> = Vec::new();
+        let mut mesh_constants_buf: Vec<MeshConstants> = Vec::new();
+        
+        let mut current_vertex: u32 = 0;
+        let mut current_index:  u32 = 0;
+
+        let to_z_up = Mat4::rotation(Vec3::new(1.,0.,0.), core::f32::consts::PI * 0.5);
+
+        for (i, m) in scene.meshes.iter().enumerate() {
+            positions_buf.extend(m.positions.iter());
+            normals_buf  .extend(m.normals  .iter());
+            indices_buf  .extend(m.indices  .iter());
+            mesh_constants_buf.push(MeshConstants {
+                transform: to_z_up * m.transform,
+            });
+
+            commands_buf.push(DrawArgs {
+                index: i as u32,
+                args: d3d12::D3D12_DRAW_INDEXED_ARGUMENTS {
+                    IndexCountPerInstance: m.indices.len() as u32,
+                    InstanceCount: 1,
+                    StartIndexLocation: current_index,
+                    BaseVertexLocation: current_vertex as i32,
+                    StartInstanceLocation: 0,
+                },
+            });
+
+            current_vertex = current_vertex.checked_add(m.positions.len() as u32)
+                .expect("Overflow");
+            current_index = current_index.checked_add(m.indices.len() as u32)
+                .expect("Overflow");
+        }
 
         let positions = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(mesh.positions.as_ptr() as *const u8, 
-                                       mesh.positions.len() * size_of::<Vec3>())
+            core::slice::from_raw_parts(positions_buf.as_ptr() as *const u8, 
+                                        positions_buf.len() * size_of::<Vec3>())
             }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload positions");
 
         let normals = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(mesh.normals.as_ptr() as *const u8, 
-                                       mesh.normals.len() * size_of::<Vec3>())
+            core::slice::from_raw_parts(normals_buf.as_ptr() as *const u8, 
+                                        normals_buf.len() * size_of::<Vec3>())
             }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload normals");
 
         let indices = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(mesh.indices.as_ptr() as *const u8, 
-                                       mesh.indices.len() * size_of::<u32>())
+            core::slice::from_raw_parts(indices_buf.as_ptr() as *const u8, 
+                                        indices_buf.len() * size_of::<u32>())
             }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload indices");
+        
+        let mesh_constants = d3d12.upload_buffer_sync( unsafe {
+            core::slice::from_raw_parts(mesh_constants_buf.as_ptr() as *const u8, 
+                                        mesh_constants_buf.len() * 
+                                        size_of::<MeshConstants>())
+            }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+            .expect("Failed to upload mesh constants");
+
+        let mesh_desc = d3d12.alloc_csu_descriptor()
+            .expect("Failed to alloc mesh constants descriptor");
+        d3d12.create_shader_resource_view_structured_buffer(&mesh_constants, 
+                                            0, mesh_constants_buf.len() as u32,
+                                            size_of::<MeshConstants>() as u32,
+                                            mesh_desc);
+
+
+        let commands = d3d12.upload_buffer_sync( unsafe {
+            core::slice::from_raw_parts(commands_buf.as_ptr() as *const u8, 
+                                        commands_buf.len() * 
+                                        size_of::<DrawArgs>())
+            }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+            .expect("Failed to upload draw arguments");
 
         let constant_buffer = d3d12.create_per_frame_constant_buffer(
             size_of::<SceneConstants>())
@@ -159,22 +252,26 @@ impl Raster {
         Raster {
             width: window.width(),
             height: window.height(),
-            vertices_count: mesh.positions.len(),
-            indices_count: mesh.indices.len(),
             depth,
             depth_heap,
             depth_descriptor,
             rs,
+            cs,
+            commands,
             positions,
             normals,
             indices,
+            vertices_count: positions_buf.len(),
+            indices_count: indices_buf.len(),
+            meshes_count: scene.meshes.len(),
+            mesh_constants,
             constant_buffer,
             pso,
         }
     }
 }
 
-impl Scene for Raster {
+impl Pipeline for Raster {
     fn resize(&mut self, d3d12: &d3d12::Context, width: u32, height:u32) {
         self.width = width;
         self.height = height;
@@ -253,6 +350,8 @@ impl Scene for Raster {
             command_list.SetGraphicsRootSignature(&self.rs);
             command_list.SetGraphicsRootConstantBufferView(0,
                 self.constant_buffer.get_gpu_virtual_address(frame_index));
+            command_list.SetGraphicsRootShaderResourceView(2,
+                self.mesh_constants.GetGPUVirtualAddress());
             
             command_list.IASetVertexBuffers(0, &vbv);
             command_list.IASetIndexBuffer(&ibv);
@@ -266,8 +365,15 @@ impl Scene for Raster {
                                             windows::Win32::Foundation::BOOL(0), 
                                             &self.depth_descriptor);
 
-            command_list.DrawIndexedInstanced(self.indices_count as u32, 
-                                              1, 0, 0, 0);
+            /*
+            let desc =self.commands.GetDesc();
+            println!("{:?}", desc);
+            std::process::exit(420);
+            */
+
+            command_list.ExecuteIndirect(&self.cs, self.meshes_count as u32,
+                                         &self.commands, 0, None, 0);
+
 
             command_list.Close().expect("Failed to close command list");
             d3d12::drop_barriers(barriers);
@@ -444,7 +550,7 @@ impl Ray {
     }
 }
 
-impl Scene for Ray {
+impl Pipeline for Ray {
     fn resize(&mut self, d3d12: &d3d12::Context, width: u32, height:u32) {
         self.width = width;
         self.height = height;
@@ -579,7 +685,7 @@ impl ClearState {
     }
 }
 
-impl Scene for ClearState {
+impl Pipeline for ClearState {
     fn resize(&mut self, _d3d12: &d3d12::Context, width: u32, height: u32) {
         self.width  = width;
         self.height = height;
@@ -706,20 +812,18 @@ fn main() {
 
 
     let ray = Box::new(Ray::init(&window, &d3d12, &mesh, &transform));
-    let raster = Box::new(Raster::init(&window, &d3d12, &mesh));
+    let raster = Box::new(Raster::init(&window, &d3d12, &scene));
 
-    let mut ray_scene:  Box<dyn Scene> = ray;
-    let mut raster_scene: Box<dyn Scene> = raster;
+    let mut ray_scene:  Box<dyn Pipeline> = ray;
+    let mut raster_scene: Box<dyn Pipeline> = raster;
 
-    let mut scene: &mut Box<dyn Scene> = &mut raster_scene;
+    let mut scene: &mut Box<dyn Pipeline> = &mut raster_scene;
 
     let mut constants = SceneConstants {
-        camera_position: Vec3::new(0., -30.0, 0.),
+        camera_position: Vec3::new(-1., -1.0, 1.) * 150.,
         light_position: Vec3::new(0., -30.0, 0.),
         diffuse_color: Vec3::new(0., 1., 0.),
         film_dist: 1.0,
-        model: transform,
-        normal: transform.to_normal_matrix(),
         ..Default::default()
     };
 
@@ -797,13 +901,16 @@ fn main() {
                 .expect("Failed to begin frame");
 
             let aspect_ratio = window.height() as f32 / window.width() as f32;
-            let near = 0.01;
-            let far = 100.0;
+            let near = 1.0;
+            let far = 1000.0;
             let fov = 2. * (1. / (constants.film_dist * 2.)).atan();
 
             constants.view = mat::lh::look_at(constants.camera_position, 
+                                              Vec3::new(0., 0., 0.),
+                                              /*
                                               constants.camera_position + 
                                               Vec3::new(0., 1., 0.),
+                                              */
                                               Vec3::new(0., 0., 1.));
             constants.projection = mat::lh::zo::perspective(
                 fov, near, far, aspect_ratio);

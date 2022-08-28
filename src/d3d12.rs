@@ -315,6 +315,21 @@ impl Context {
         unsafe { self.device.CreateRootSignature(1, shader.data).ok() } 
     }
 
+    pub fn create_command_signature(&self, rs: &ID3D12RootSignature, stride: u32, 
+                                    descs: &[D3D12_INDIRECT_ARGUMENT_DESC]) 
+        -> Option<ID3D12CommandSignature> {
+        unsafe {
+            let mut cs: Option<ID3D12CommandSignature> = None;
+            self.device.CreateCommandSignature(&D3D12_COMMAND_SIGNATURE_DESC {
+                ByteStride: stride,
+                NumArgumentDescs: descs.len() as u32,
+                pArgumentDescs: descs.as_ptr(),
+                NodeMask: 0,
+            }, rs, &mut cs).ok()?;
+            cs
+        }
+    }
+
     pub fn create_compute_pipelinestate(&self, shader: &Shader, 
                                         rs: &ID3D12RootSignature)
         -> Option<ID3D12PipelineState> {
@@ -405,6 +420,30 @@ impl Context {
                 }, descriptor);
         }
     }
+
+    pub fn create_shader_resource_view_structured_buffer(&self, 
+         resource: &ID3D12Resource, first: u64, count: u32, stride: u32,
+         descriptor: D3D12_CPU_DESCRIPTOR_HANDLE) {
+        unsafe {
+            self.device.CreateShaderResourceView(resource, 
+                &D3D12_SHADER_RESOURCE_VIEW_DESC { 
+                    Format: DXGI_FORMAT_UNKNOWN,
+                    ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
+                    Shader4ComponentMapping:
+                        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                    Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                        Buffer: D3D12_BUFFER_SRV {
+                            FirstElement: first, 
+                            NumElements: count,
+                            StructureByteStride: stride,
+                            Flags: D3D12_BUFFER_SRV_FLAG_NONE,
+                        }
+                    },
+                    ..Default::default() 
+                }, descriptor);
+        }
+    }
+
 
     pub fn create_shader_resource_view_tex2d(&self, resource: &ID3D12Resource,
                                      format: DXGI_FORMAT,
