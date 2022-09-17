@@ -2,7 +2,7 @@
 
 GlobalRootSignature MyGlobalRootSignature =
 {
-    "DescriptorTable(UAV(u0), SRV(t0), SRV(t1), SRV(t2))," // output, as, indices, normals
+    "DescriptorTable(UAV(u0), SRV(t0), SRV(t1), SRV(t2), SRV(t3))," // output, as, indices, normals, instances data
     "CBV(b0)," // constants
 };
 
@@ -31,6 +31,12 @@ RaytracingAccelerationStructure scene : register(t0);
 Buffer<uint> index_buffer: register(t1);
 Buffer<vec3> normals_buffer: register(t2);
 
+struct MeshInstance {
+    uint vertex_offset;
+    uint index_offset;
+};
+StructuredBuffer<MeshInstance> instances_buffer: register(t3);
+
 struct Constants {
     vec3 camera_position;
 
@@ -58,9 +64,10 @@ inline void GenerateCameraRay(uint2 index, out float3 origin, out float3 directi
     float2 xy = index + 0.5f; // center in the middle of the pixel.
     float2 offset = xy / DispatchRaysDimensions().xy * 2.0 - 1.0;
 
-    vec3 camera_forward = vec3(0, 1, 0);
-    vec3 camera_up = vec3(0, 0, 1);
-    vec3 camera_right = vec3(1, 0, 0);
+    vec3 camera_forward = normalize(-g_constants.camera_position);
+    vec3 world_up = vec3(0, 0, 1);
+    vec3 camera_right = normalize(cross(camera_forward, world_up));
+    vec3 camera_up = cross(camera_right, camera_forward);
     vec3 camera_p = g_constants.camera_position;
     
     float film_dist = g_constants.film_dist;
@@ -103,24 +110,53 @@ void Miss(inout HitInfo payload)
     payload.distance = -1.0;
 }
 
+
+uint MurmurMix(uint Hash)
+{
+	Hash ^= Hash >> 16;
+	Hash *= 0x85ebca6b;
+	Hash ^= Hash >> 13;
+	Hash *= 0xc2b2ae35;
+	Hash ^= Hash >> 16;
+	return Hash;
+}
+
+float3 IntToColor(uint Index)
+{
+	uint Hash = MurmurMix(Index);
+
+	float3 Color = float3
+	(
+		(Hash >>  0) & 255,
+		(Hash >>  8) & 255,
+		(Hash >> 16) & 255
+	);
+
+	return Color * (1.0f / 255.0f);
+}
+
 [shader("closesthit")]
 void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes attribs)
 {
     vec3 position = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
 
     uint triangle_index = PrimitiveIndex();
+    uint mesh_index = InstanceID();
+    MeshInstance instance = instances_buffer[mesh_index];
+    uint index_offset = instance.index_offset;
+    uint vertex_offset = instance.vertex_offset;
     
     uint3 indices;
-    indices.x = index_buffer[triangle_index * 3 + 0];
-    indices.y = index_buffer[triangle_index * 3 + 1];
-    indices.z = index_buffer[triangle_index * 3 + 2];
+    indices.x = index_buffer[triangle_index * 3 + 0 + index_offset];
+    indices.y = index_buffer[triangle_index * 3 + 1 + index_offset];
+    indices.z = index_buffer[triangle_index * 3 + 2 + index_offset];
 
     vec2 barycentrics = attribs.barycentrics;
 
     vec3 normal = 
-        normals_buffer[indices.x] * (1 - barycentrics.x - barycentrics.y) +
-        normals_buffer[indices.y] * barycentrics.x +
-        normals_buffer[indices.z] * barycentrics.y;
+        normals_buffer[indices.x + vertex_offset] * (1 - barycentrics.x - barycentrics.y) +
+        normals_buffer[indices.y + vertex_offset] * barycentrics.x +
+        normals_buffer[indices.z + vertex_offset] * barycentrics.y;
     
     vec3 light_p = g_constants.light_position;
     vec3 camera_p = g_constants.camera_position;
@@ -135,13 +171,16 @@ void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes 
 
     vec3 ka = 0.1;
     vec3 kd = max(dot(L, N), 0);
-    vec3 ks = pow(max(dot(N, H), 0), 16.0);
+    vec3 ks = pow(max(dot(N, H), 0), 16.0) * 0.0;
 
-    vec3 color = diffuse * (ka + kd) + specular * ks;
+    //vec3 color = diffuse * (ka + kd) + specular * ks;
     //vec3 color = specular * (PrimitiveIndex() / 100000.0);
 
     //vec3 color = N * 0.5 + 1.0;
     //vec3 color = vec3(barycentrics, 1- barycentrics.x - barycentrics.y);
+
+    vec3 diff = IntToColor(mesh_index);
+    vec3 color = diff * (ka + kd) + specular * ks;
 
     payload.color = color;
     payload.distance = RayTCurrent();

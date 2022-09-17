@@ -1,6 +1,9 @@
 //#![windows_subsystem = "windows"]
 
+use core::ptr::{null, null_mut};
+use std::time::Instant;
 use core::mem::{size_of, size_of_val};
+
 use math::vec::Vec3;
 use math::mat::{Mat4, self};
 use mesh::{Mesh, Scene};
@@ -8,7 +11,7 @@ use mesh::{Mesh, Scene};
 mod win32;
 mod d3d12;
 mod shaders;
-mod asset;
+// mod asset;
 mod mesh;
 mod imgui_impl;
 mod gltf;
@@ -75,6 +78,7 @@ struct Raster {
 }
 
 struct MeshConstants {
+    #[allow(dead_code)]
     transform: Mat4,
 }
 
@@ -148,6 +152,9 @@ impl Raster {
             current_index = current_index.checked_add(m.indices.len() as u32)
                 .expect("Overflow");
         }
+
+        assert!(current_vertex == positions_buf.len() as u32);
+        assert!(current_index == indices_buf.len() as u32);
 
         let positions = d3d12.upload_buffer_sync( unsafe {
             core::slice::from_raw_parts(positions_buf.as_ptr() as *const u8, 
@@ -384,32 +391,42 @@ impl Pipeline for Raster {
 }
 
 #[allow(dead_code)]
-struct Ray {
-    rs: d3d12::ID3D12RootSignature,
-    state_object: d3d12::ID3D12StateObject,
-    width: u32,
-    height: u32,
-    raygen_resource: d3d12::ID3D12Resource,
-    raygen_table:    d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE,
-    miss_resource:   d3d12::ID3D12Resource,
-    miss_table:      d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
-    hit_resource:    d3d12::ID3D12Resource,
-    hit_table:       d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
-    acceleration_structure: d3d12::AccelerationStructure,
-    acceleration_structure_desc_handle: d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
-    normals:         d3d12::ID3D12Resource,
-    normals_desc_handle: d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
-    indices:         d3d12::ID3D12Resource,
-    indices_desc_handle: d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
-    uav: d3d12::ID3D12Resource,
-    uav_desc_handle: d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+#[repr(C)]
+struct RayMeshInstance {
+    vertex_offset: u32,
+    index_offset: u32,
+}
 
-    constant_buffer: d3d12::PerFrameConstantBuffer,
+#[allow(dead_code)]
+struct Ray {
+    rs:                         d3d12::ID3D12RootSignature,
+    state_object:               d3d12::ID3D12StateObject,
+    width:                      u32,
+    height:                     u32,
+    raygen_resource:            d3d12::ID3D12Resource,
+    raygen_table:               d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE,
+    miss_resource:              d3d12::ID3D12Resource,
+    miss_table:                 d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
+    hit_resource:               d3d12::ID3D12Resource,
+    hit_table:                  d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
+    tlas:                       d3d12::ID3D12Resource,
+    tlas_desc_handle:           d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    blas:                       d3d12::ID3D12Resource,
+    instances:                  d3d12::ID3D12Resource,
+    normals:                    d3d12::ID3D12Resource,
+    normals_desc_handle:        d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    indices:                    d3d12::ID3D12Resource,
+    indices_desc_handle:        d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    uav:                        d3d12::ID3D12Resource,
+    uav_desc_handle:            d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    constant_buffer:            d3d12::PerFrameConstantBuffer,
+    mesh_instances:             d3d12::ID3D12Resource,
+    mesh_instances_desc_handle: d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
 }
 
 impl Ray {
     fn init(window: &win32::Window, d3d12: &d3d12::Context, 
-                mesh: &Mesh, transform: &Mat4) -> Self {
+            scene: &Scene) -> Self {
         let rs = d3d12.create_root_signature_from_shader(&shaders::RAY_LIB)
             .expect("Failed to create root signature");
 
@@ -474,43 +491,272 @@ impl Ray {
         };
 
         // Acceleration structures
+        let mut positions_buf: Vec<Vec3> = Vec::new();
+        let mut normals_buf: Vec<Vec3> = Vec::new();
+        let mut indices_buf: Vec<u32> = Vec::new();
+        let mut mesh_instances_buf: Vec<RayMeshInstance> = Vec::new();
+        
+        let mut scratch_size: u64 = 0;
+        let mut blas_size:    u64 = 0;
+
+        let mut geom_descs = 
+            vec![d3d12::D3D12_RAYTRACING_GEOMETRY_DESC::default(); scene.meshes.len()];
+
+        let mut inputs =
+            vec![d3d12::D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS::default(); scene.meshes.len()];
+
+        let mut info_sizes = vec![(0u64, 0u64); scene.meshes.len()];
+
+
+        let mut current_vertex: u32 = 0;
+        let mut current_index:  u32 = 0;
+
+        for (i, m) in scene.meshes.iter().enumerate() {
+            positions_buf.extend(m.positions.iter());
+            normals_buf  .extend(m.normals  .iter());
+            indices_buf  .extend(m.indices  .iter());
+            mesh_instances_buf.push(RayMeshInstance {
+                vertex_offset: current_vertex,
+                index_offset: current_index,
+            });
+
+            current_vertex = current_vertex.checked_add(m.positions.len() as u32)
+                .expect("Overflow");
+            current_index = current_index.checked_add(m.indices.len() as u32)
+                .expect("Overflow");
+
+            geom_descs[i] = d3d12::D3D12_RAYTRACING_GEOMETRY_DESC {
+                Type: d3d12::D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
+                Flags: d3d12::D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE,
+                Anonymous: d3d12::D3D12_RAYTRACING_GEOMETRY_DESC_0 {
+                    Triangles: d3d12::D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC {
+                        VertexBuffer: d3d12::D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE {
+                            StartAddress: 0,
+                            StrideInBytes: 12,
+                        },
+                        VertexFormat: d3d12::DXGI_FORMAT_R32G32B32_FLOAT,
+                        VertexCount: m.positions.len() as u32,
+                        IndexFormat: d3d12::DXGI_FORMAT_R32_UINT,
+                        IndexCount: m.indices.len() as u32,
+                        IndexBuffer: 0,
+                        ..Default::default()
+                    }
+                },
+            };
+
+            inputs[i] = d3d12::D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS {
+                Type: d3d12::D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,
+                Flags: d3d12::D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE,
+                DescsLayout: d3d12::D3D12_ELEMENTS_LAYOUT_ARRAY,
+                NumDescs: 1,
+                Anonymous: d3d12::D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0 {
+                    pGeometryDescs: &geom_descs[i],
+                },
+            };
+
+            let mut info = Default::default();
+            unsafe {
+                d3d12.device.GetRaytracingAccelerationStructurePrebuildInfo(
+                    &inputs[i], &mut info);
+            }
+
+            scratch_size += (info.ScratchDataSizeInBytes + 0xFF) & !0xFF;
+            blas_size += (info.ResultDataMaxSizeInBytes + 0xFF) & !0xFF;
+
+            info_sizes[i] = (info.ScratchDataSizeInBytes, 
+                             info.ResultDataMaxSizeInBytes);
+        }
+
+        assert!(current_vertex == positions_buf.len() as u32);
+        assert!(current_index == indices_buf.len() as u32);
+
         let positions = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(mesh.positions.as_ptr() as *const u8, 
-                                       mesh.positions.len() * size_of::<Vec3>())
+            core::slice::from_raw_parts(positions_buf.as_ptr() as *const u8, 
+                                        positions_buf.len() * size_of::<Vec3>())
             }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload positions");
 
         let normals = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(mesh.normals.as_ptr() as *const u8, 
-                                       mesh.normals.len() * size_of::<Vec3>())
+            core::slice::from_raw_parts(normals_buf.as_ptr() as *const u8, 
+                                        normals_buf.len() * size_of::<Vec3>())
             }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload normals");
 
         let indices = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(mesh.indices.as_ptr() as *const u8, 
-                                       mesh.indices.len() * size_of::<u32>())
+            core::slice::from_raw_parts(indices_buf.as_ptr() as *const u8, 
+                                        indices_buf.len() * size_of::<u32>())
             }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload indices");
+        
+        let mesh_instances = d3d12.upload_buffer_sync( unsafe {
+            core::slice::from_raw_parts(mesh_instances_buf.as_ptr() as *const u8, 
+                                        mesh_instances_buf.len() * 
+                                        size_of::<RayMeshInstance>())
+            }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+            .expect("Failed to upload mesh instances");
 
+        let blas_scratch = d3d12.create_resource(
+            &d3d12::ResourceDesc::uav_buffer(scratch_size as usize), 
+            d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            d3d12::D3D12_HEAP_TYPE_DEFAULT).expect("Failed to alloc blas scratch");
 
-        let acceleration_structure = 
-            d3d12.create_acceleration_structure(mesh.positions.len(), &positions,
-                                                mesh.indices.len(), &indices,
-                                                &transform)
-            .expect("Failed to create acceleration structure");
+        let blas = d3d12.create_resource(
+             &d3d12::ResourceDesc::uav_buffer(blas_size as usize), 
+             d3d12::D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+             d3d12::D3D12_HEAP_TYPE_DEFAULT).expect("Failed to alloc BLAS");
 
-        let acceleration_structure_desc_handle = d3d12.alloc_csu_descriptor()
+        let mut scratch_pointer = unsafe {
+            blas_scratch.GetGPUVirtualAddress()
+        };
+        let scratch_end = scratch_pointer + scratch_size;
+        let mut blas_pointer = unsafe {
+            blas.GetGPUVirtualAddress()
+        };
+        let blas_end = blas_pointer + blas_size;
+        let mut vertex_gpu_pointer = unsafe {
+            positions.GetGPUVirtualAddress()
+        };
+        let mut index_gpu_pointer = unsafe {
+            indices.GetGPUVirtualAddress()
+        };
+
+        for (i, m) in scene.meshes.iter().enumerate() {
+            unsafe {
+                let tris = &mut geom_descs[i].Anonymous.Triangles;
+                tris.VertexBuffer.StartAddress = vertex_gpu_pointer;
+                tris.IndexBuffer = index_gpu_pointer;
+
+                vertex_gpu_pointer += (m.positions.len() * size_of::<Vec3>()) as u64;
+                index_gpu_pointer += (m.indices.len() * size_of::<u32>()) as u64;
+
+                let as_desc = 
+                    d3d12::D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC {
+                        Inputs: inputs[i],
+                        DestAccelerationStructureData: blas_pointer,
+                        ScratchAccelerationStructureData: scratch_pointer,
+                        SourceAccelerationStructureData: 0,
+                };
+
+                scratch_pointer += (info_sizes[i].0 + 0xFF) & !0xFF;
+                blas_pointer    += (info_sizes[i].1 + 0xFF) & !0xFF;
+
+                assert!(scratch_pointer <= scratch_end);
+                assert!(blas_pointer    <= blas_end   );
+
+                d3d12.sync_command_list
+                    .BuildRaytracingAccelerationStructure(&as_desc, &[]);
+            }
+        }
+        assert!(scratch_pointer == scratch_end);
+        assert!(blas_pointer    == blas_end   );
+
+        let barriers = [d3d12::ResourceBarrier::uav(&blas)];
+        unsafe {
+            d3d12.sync_command_list.ResourceBarrier(&barriers);
+            d3d12::drop_barriers(barriers);
+        }
+
+        let mut inputs = d3d12::D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS {
+            Type: d3d12::D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL,
+            DescsLayout: d3d12::D3D12_ELEMENTS_LAYOUT_ARRAY,
+            Flags: d3d12::D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE,
+            NumDescs: scene.meshes.len() as u32,
+            ..Default::default()
+        };
+
+        let mut info = Default::default();
+
+        unsafe {
+            d3d12.device.GetRaytracingAccelerationStructurePrebuildInfo(
+                &inputs, &mut info);
+        }
+
+        let tlas_scratch = d3d12.create_resource(
+            &d3d12::ResourceDesc::uav_buffer(info.ScratchDataSizeInBytes 
+                                      as usize), 
+            d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            d3d12::D3D12_HEAP_TYPE_DEFAULT).expect("Failed to alloc tlas scratch");
+
+        let tlas = d3d12.create_resource(
+            &d3d12::ResourceDesc::uav_buffer(info.ResultDataMaxSizeInBytes 
+                                      as usize), 
+            d3d12::D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+            d3d12::D3D12_HEAP_TYPE_DEFAULT).expect("Failed to alloc tlas");
+
+        let instances = d3d12.create_resource(
+            &d3d12::ResourceDesc::buffer(
+                size_of::<d3d12::D3D12_RAYTRACING_INSTANCE_DESC>() * 
+                scene.meshes.len()), 
+            d3d12::D3D12_RESOURCE_STATE_GENERIC_READ,
+            d3d12::D3D12_HEAP_TYPE_UPLOAD).expect("Failed to alloc instances");
+
+        let instances_descs: &mut[d3d12::D3D12_RAYTRACING_INSTANCE_DESC] = unsafe {
+            let mut ptr = null_mut();
+            instances.Map(0, null(), &mut ptr)
+                .expect("Failed to map instance descriptors");
+            core::slice::from_raw_parts_mut(ptr as *mut d3d12::D3D12_RAYTRACING_INSTANCE_DESC,
+                                            scene.meshes.len())
+        };
+
+        let to_z_up = Mat4::rotation(Vec3::new(1.,0.,0.), core::f32::consts::PI * 0.5);
+
+        let mut blas_pointer = unsafe { blas.GetGPUVirtualAddress() };
+        let blas_end = blas_pointer + blas_size;
+
+        for (i, m) in scene.meshes.iter().enumerate() {
+            let t = to_z_up * m.transform;
+            instances_descs[i] = d3d12::D3D12_RAYTRACING_INSTANCE_DESC {
+                Transform: [
+                    t.e[0][0], t.e[1][0], t.e[2][0], t.e[3][0],
+                    t.e[0][1], t.e[1][1], t.e[2][1], t.e[3][1],
+                    t.e[0][2], t.e[1][2], t.e[2][2], t.e[3][2],
+                ],
+                _bitfield1: i as u32 | (0xFF << 24),
+                _bitfield2: 0 | (d3d12::D3D12_RAYTRACING_INSTANCE_FLAG_NONE.0 << 24),
+                AccelerationStructure: blas_pointer,
+            };
+
+            blas_pointer += (info_sizes[i].1 + 0xFF) & !0xFF;
+            assert!(blas_pointer <= blas_end);
+        }
+
+        assert!(blas_pointer == blas_end);
+
+        // Unmap instance descs
+        core::mem::drop(instances_descs);
+        unsafe { instances.Unmap(0, null()) };
+
+        unsafe {
+            inputs.Anonymous.InstanceDescs = instances.GetGPUVirtualAddress();
+        }
+
+        let tlas_desc = unsafe {
+            d3d12::D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC {
+                Inputs: inputs,
+                DestAccelerationStructureData: tlas.GetGPUVirtualAddress(),
+                ScratchAccelerationStructureData: tlas_scratch.GetGPUVirtualAddress(),
+                SourceAccelerationStructureData: 0,
+            }
+        };
+
+        unsafe {
+            d3d12.sync_command_list.BuildRaytracingAccelerationStructure(
+                &tlas_desc, &[]);
+        }
+
+        d3d12.wait_sync_commands();
+
+        let tlas_desc_handle = d3d12.alloc_csu_descriptor()
             .expect("failed to alloc csu descriptor for as");
 
-        d3d12.create_shader_resource_view_as(&acceleration_structure.tlas,
-                                         acceleration_structure_desc_handle);
+        d3d12.create_shader_resource_view_as(&tlas, tlas_desc_handle);
 
         let indices_desc_handle = d3d12.alloc_csu_descriptor()
             .expect("Failed to alloc csu descriptor for indices");
 
         d3d12.create_shader_resource_view_buffer(&indices,
                                                  d3d12::DXGI_FORMAT_R32_UINT,
-                                                 0, mesh.indices.len() as u32,
+                                                 0, indices_buf.len() as u32,
                                                  indices_desc_handle);
 
         let normals_desc_handle = d3d12.alloc_csu_descriptor()
@@ -518,15 +764,23 @@ impl Ray {
 
         d3d12.create_shader_resource_view_buffer(&normals,
                                                  d3d12::DXGI_FORMAT_R32G32B32_FLOAT,
-                                                 0, mesh.normals.len() as u32,
+                                                 0, normals_buf.len() as u32,
                                                  normals_desc_handle);
 
+        let mesh_instances_desc_handle = d3d12.alloc_csu_descriptor()
+            .expect("Failed to alloc csu descriptor for instances");
+        d3d12.create_shader_resource_view_structured_buffer(&mesh_instances, 
+                                            0, mesh_instances_buf.len() as u32,
+                                            size_of::<RayMeshInstance>() as u32,
+                                            mesh_instances_desc_handle);
 
         let constant_buffer = d3d12.create_per_frame_constant_buffer(
             size_of::<SceneConstants>())
             .expect("Failed to alloc per frame constant buffers");
         
         Self {
+            width: window.width(),
+            height: window.height(),
             rs,
             state_object,
             uav,
@@ -537,15 +791,17 @@ impl Ray {
             miss_resource,
             hit_table,
             hit_resource,
-            acceleration_structure,
-            acceleration_structure_desc_handle,
+            tlas,
+            tlas_desc_handle,
+            blas,
+            instances,
             normals,
             normals_desc_handle,
             indices,
             indices_desc_handle,
             constant_buffer,
-            width: window.width(),
-            height: window.height(),
+            mesh_instances,
+            mesh_instances_desc_handle,
         }
     }
 }
@@ -567,7 +823,6 @@ impl Pipeline for Ray {
 
     fn render(&mut self, d3d12: &d3d12::Context, frame: &d3d12::Frame, 
               frame_index: u32, constants: &SceneConstants) {
-
         let command_list = d3d12.create_graphics_command_list(frame)
             .expect("Failed to create command list");
 
@@ -757,15 +1012,19 @@ fn main() {
     let mesh = asset_file.load_mesh("dragon").expect("Asset not found");
     */
     
-    let scene = gltf::import_file(&Path::new("res").join("Bistro.glb"))
+    let mut scene = gltf::import_file(&Path::new("res").join("Bistro.glb"))
         .expect("GLB file not found");
 
+    println!("{}", scene.meshes.len());
+
+    /*
     let mesh = &scene.meshes[16];
 
     println!("{}, {}, {}, {}, {:?}", scene.meshes.len(),
         mesh.positions.len(), mesh.normals.len(), mesh.indices.len(),
         mesh.transform,
         );
+        */
 
     /*
     let mesh = Mesh {
@@ -777,10 +1036,11 @@ fn main() {
         normals: Vec::from([Vec3::new(0., 0., 1.0); 3]),
         indices: vec![0, 1, 2],
     };
-    */
 
+    
     let transform = mesh.transform *
         Mat4::rotation(Vec3::new(1.,0.,0.), core::f32::consts::PI * 0.5);
+    */
     /*
         Mat4::translation(Vec3::new(0., 0., -5.0)) *
         //Mat4::rotation(Vec3::new(0.,0.,1.), core::f32::consts::PI * 0.5) * 
@@ -811,21 +1071,26 @@ fn main() {
         .expect("Failed to initialize imgui backend");
 
 
-    let ray = Box::new(Ray::init(&window, &d3d12, &mesh, &transform));
+    let ray = Box::new(Ray::init(&window, &d3d12, &scene));
     let raster = Box::new(Raster::init(&window, &d3d12, &scene));
 
     let mut ray_scene:  Box<dyn Pipeline> = ray;
     let mut raster_scene: Box<dyn Pipeline> = raster;
 
-    let mut scene: &mut Box<dyn Pipeline> = &mut raster_scene;
+    let mut scene: &mut Box<dyn Pipeline> = &mut ray_scene;
 
     let mut constants = SceneConstants {
         camera_position: Vec3::new(-1., -1.0, 1.) * 150.,
+        //camera_position: Vec3::new(0., 0., 0.) * 150.,
         light_position: Vec3::new(0., -30.0, 0.),
         diffuse_color: Vec3::new(0., 1., 0.),
         film_dist: 1.0,
         ..Default::default()
     };
+
+    let mut timestamp = Instant::now();
+    let mut frame_times = [0.0f64; 128];
+    let mut frame_time_index: usize = 0;
 
     'main: loop {
         while let Some(event) = window.poll_events() {
@@ -897,12 +1162,22 @@ fn main() {
 
 
         {
+            let now = Instant::now();
+            let secs = (now - timestamp).as_secs_f64();
+            timestamp = now;
+
+            frame_times[frame_time_index] = secs;
+            let avg_frame_time = frame_times.iter().fold(0.0, |s, x| s + x) / 
+                frame_times.len() as f64;
+            frame_time_index = (frame_time_index + 1) % frame_times.len();
+
+
             let (frame, index) = d3d12.begin_frame()
                 .expect("Failed to begin frame");
 
             let aspect_ratio = window.height() as f32 / window.width() as f32;
-            let near = 1.0;
-            let far = 1000.0;
+            let near = 50.0;
+            let far = 500.0;
             let fov = 2. * (1. / (constants.film_dist * 2.)).atan();
 
             constants.view = mat::lh::look_at(constants.camera_position, 
@@ -922,13 +1197,16 @@ fn main() {
                 ui.window("Hello world")
                     .size([300.0, 150.0], imgui::Condition::FirstUseEver)
                     .build(|| {
+                        ui.text(format!("{:.3}ms ({:.3}fps)", 
+                                        avg_frame_time * 1000.0,
+                                        1.0 / avg_frame_time));
                         imgui::Drag::new("Film distance").range(0.1, 2.0)
                             .speed(0.01).build(&ui, &mut constants.film_dist);
                     });
                 }
             );
 
-            d3d12.end_frame(frame).expect("Failed to end frame");
+            d3d12.end_frame(frame, false).expect("Failed to end frame");
         }
 
     }

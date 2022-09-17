@@ -21,6 +21,12 @@ pub use windows::Win32::Graphics::{
     Dxgi::Common::*,
 };
 
+#[no_mangle]
+pub static D3D12SDKVersion: u32 = 606;
+
+#[no_mangle]
+pub static D3D12SDKPath: &[u8] = b"..\\..\\agility\\agility\\build\\native\\bin\\x64\\";
+
 pub const BACKBUFFER_COUNT: u32 = 3;
 const GPU_VALIDATION_ENABLED: bool = false;
 const CSU_DESCRIPTOR_HEAP_COUNT: usize = 1024;
@@ -93,7 +99,7 @@ pub struct Context {
     fence_event: HANDLE,
     sync_queue: ID3D12CommandQueue,
     sync_allocator: ID3D12CommandAllocator,
-    sync_command_list: ID3D12GraphicsCommandList5,
+    pub sync_command_list: ID3D12GraphicsCommandList5,
     sync_fence: ID3D12Fence,
     sync_fence_value: Cell<u64>,
     rtv_descriptor_heap: ID3D12DescriptorHeap,
@@ -515,9 +521,9 @@ impl Context {
         Some((frame, index))
     }
 
-    pub fn end_frame(&self, frame: &Frame) -> Option<()> {
+    pub fn end_frame(&self, frame: &Frame, vsync: bool) -> Option<()> {
         unsafe {
-            self.swapchain.Present(1, 0).ok()?;
+            self.swapchain.Present(if vsync {1} else {0}, 0).ok()?;
 
             self.command_queue.Signal(&self.fence, 
                                       frame.fence_value.get()).ok()?;
@@ -833,8 +839,7 @@ impl Context {
                          D3D12_RESOURCE_STATE_GENERIC_READ,
                          D3D12_HEAP_TYPE_UPLOAD)?),
         };
-
-       
+ 
         let instance_desc: &mut D3D12_RAYTRACING_INSTANCE_DESC = unsafe {
             let mut ptr = null_mut();
             buffers.instance_desc.as_ref().unwrap().Map(0, null(), &mut ptr)

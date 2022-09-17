@@ -1,9 +1,4 @@
-use gltf::{
-    Gltf,
-    Document,
-    buffer,
-    image,
-};
+use gltf::Gltf;
 
 use std::path::Path;
 use std::io::BufReader;
