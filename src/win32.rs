@@ -1,16 +1,14 @@
 use windows::{
-        core::*, 
-        Win32::Foundation::*, 
-        Win32::System::LibraryLoader::*, 
+        core::*,
+        Win32::Foundation::*,
+        Win32::System::LibraryLoader::*,
         Win32::UI::WindowsAndMessaging::*,
         Win32::UI::Input::KeyboardAndMouse::*,
         Win32::UI::Controls::*,
 };
 
-use std::mem::size_of;
-use std::mem::transmute;
-
-//const WM_APP_RESIZE: u32 = WM_APP + 0;
+use core::mem::size_of;
+use core::mem::transmute;
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -70,7 +68,7 @@ impl Window {
                 return Some(Event::Resize(self.state.width, self.state.height));
             }
         }
- 
+
 
         if unsafe { PeekMessageA(&mut message, None, 0, 0, PM_REMOVE) }.into() {
             unsafe {
@@ -93,7 +91,7 @@ impl Window {
                             hwndTrack: self.handle,
                             dwHoverTime: 0,
                         };
-                        unsafe { 
+                        unsafe {
                             if TrackMouseEvent(&mut tme).0 != 0{
                                 self.state.mouse_tracked = true;
                             }
@@ -108,22 +106,22 @@ impl Window {
                     self.state.mouse_tracked = false;
                     Some(Event::MouseLeave)
                 }
-                
+
                 WM_LBUTTONDOWN | WM_LBUTTONDBLCLK |
                 WM_RBUTTONDOWN | WM_RBUTTONDBLCLK |
                 WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => {
-                    if self.state.mouse_button_mask == 0 && 
+                    if self.state.mouse_button_mask == 0 &&
                         unsafe { GetCapture().0 } == 0 {
 
                         unsafe { SetCapture(self.handle); }
                     }
 
                     let (idx, button) = match message.message {
-                        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => 
+                        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK =>
                             (0, MouseButton::Left),
-                        WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => 
+                        WM_RBUTTONDOWN | WM_RBUTTONDBLCLK =>
                             (1, MouseButton::Right),
-                        WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => 
+                        WM_MBUTTONDOWN | WM_MBUTTONDBLCLK =>
                             (2, MouseButton::Middle),
                         _ => unreachable!(),
                     };
@@ -141,9 +139,9 @@ impl Window {
                         WM_MBUTTONUP => (2, MouseButton::Middle),
                         _ => unreachable!(),
                     };
-                    
+
                     self.state.mouse_button_mask &= !(1 << idx);
-                    if self.state.mouse_button_mask == 0 && 
+                    if self.state.mouse_button_mask == 0 &&
                         unsafe { GetCapture() } == self.handle {
                         unsafe { ReleaseCapture(); }
                     }
@@ -152,20 +150,20 @@ impl Window {
                 }
 
                 WM_MOUSEWHEEL => {
-                    let delta = (message.wParam.0 >> 16) as i16 as f32 
+                    let delta = (message.wParam.0 >> 16) as i16 as f32
                         / WHEEL_DELTA as f32;
                     Some(Event::MouseWheel(0.0, delta))
                 }
 
                 WM_MOUSEHWHEEL => {
-                    let delta = (message.wParam.0 >> 16) as i16 as f32 
+                    let delta = (message.wParam.0 >> 16) as i16 as f32
                         / WHEEL_DELTA as f32;
                     Some(Event::MouseWheel(delta, 0.0))
                 }
 
                 WM_SETFOCUS => Some(Event::Focus(true)),
                 WM_KILLFOCUS => Some(Event::Focus(false)),
-                
+
                 _ => None
             }
         } else {
@@ -176,7 +174,7 @@ impl Window {
 
 }
 
-extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: 
+extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam:
                            LPARAM) -> LRESULT {
     let mut state: Option<&mut WindowState> = unsafe {
         let param = GetWindowLongPtrA(window, GWLP_USERDATA) as *mut WindowState;
@@ -191,7 +189,7 @@ extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam:
         WM_CREATE => {
             unsafe {
                 let create_struct: &CREATESTRUCTA = transmute(lparam);
-                SetWindowLongPtrA(window, GWLP_USERDATA, 
+                SetWindowLongPtrA(window, GWLP_USERDATA,
                                create_struct.lpCreateParams as _);
             }
             LRESULT::default()
@@ -200,7 +198,7 @@ extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam:
             unsafe { PostQuitMessage(0) };
             LRESULT::default()
         }
-        
+
         WM_KEYDOWN => {
             if wparam.0 == VK_ESCAPE.0 as usize {
                unsafe { DestroyWindow(window); }
@@ -209,7 +207,7 @@ extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam:
         }
 
         WM_SIZE => {
-            let (width, height) = 
+            let (width, height) =
                 if wparam.0 == SIZE_MINIMIZED as usize {
                     (0, 0)
                 } else {
@@ -231,17 +229,6 @@ extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam:
 
         _ => {
             unsafe { DefWindowProcA(window, message, wparam, lparam) }
-            /*
-            let user_data = unsafe { GetWindowLong(window, GWLP_USERDATA) };
-            let sample = std::ptr::NonNull::<S>::new(user_data as _);
-            let handled = sample.map_or(false, |mut s| sample_wndproc(unsafe { s.as_mut() }, message, wparam));
-
-            if handled {
-                LRESULT::default()
-            } else {
-                unsafe { DefWindowProcA(window, message, wparam, lparam) }
-            }
-            */
         }
     }
 }
@@ -264,10 +251,10 @@ pub fn create_window(title: &str, width: u32, height: u32) -> Option<Window> {
         return None;
     }
 
-    let mut window_rect = RECT { 
-        left: 0, top: 0, 
-        right: width.try_into().ok()?, 
-        bottom: height.try_into().ok()?, 
+    let mut window_rect = RECT {
+        left: 0, top: 0,
+        right: width.try_into().ok()?,
+        bottom: height.try_into().ok()?,
     };
 
     unsafe { AdjustWindowRect(&mut window_rect, WS_OVERLAPPEDWINDOW, false) };

@@ -1,7 +1,6 @@
 use crate::d3d12;
 use crate::shaders;
-
-use imgui::{Context, BackendFlags, Ui, DrawData, DrawIdx, DrawVert, DrawCmd, 
+use imgui::{Context, BackendFlags, Ui, DrawData, DrawIdx, DrawVert, DrawCmd,
     DrawCmdParams, TextureId};
 
 use windows::{
@@ -45,7 +44,7 @@ pub struct Backend {
 }
 
 impl Backend {
-    pub fn init(d3d12: &d3d12::Context, ctx: &mut Context, 
+    pub fn init(d3d12: &d3d12::Context, ctx: &mut Context,
                 width: u32, height: u32) -> Option<Backend> {
 
         ctx.set_renderer_name(Some(String::from("windows-rs d3d12")));
@@ -81,8 +80,8 @@ impl Backend {
 
         // Root signature
         let rs = d3d12.create_root_signature_from_shader(&shaders::IMGUI_VS)?;
-        
-        let input_elem_descs = [ 
+
+        let input_elem_descs = [
             D3D12_INPUT_ELEMENT_DESC {
                 SemanticName: PCSTR(b"POSITION\0".as_ptr()),
                 SemanticIndex: 0,
@@ -168,7 +167,7 @@ impl Backend {
         };
 
         pso_desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    
+
         pso_desc.BlendState.RenderTarget[0] = D3D12_RENDER_TARGET_BLEND_DESC {
             BlendEnable: BOOL(1),
             SrcBlend: D3D12_BLEND_SRC_ALPHA,
@@ -188,13 +187,13 @@ impl Backend {
         let font_atlas_format = DXGI_FORMAT_R8G8B8A8_UNORM;
         let font_atlas_resource = {
             let atlas = ctx.fonts().build_rgba32_texture();
-            d3d12.upload_tex2d_sync(atlas.data, atlas.width, atlas.height, 
-                                font_atlas_format, 
+            d3d12.upload_tex2d_sync(atlas.data, atlas.width, atlas.height,
+                                font_atlas_format,
                                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?
         };
 
-        d3d12.create_shader_resource_view_tex2d(&font_atlas_resource, 
-                                                font_atlas_format, 
+        d3d12.create_shader_resource_view_tex2d(&font_atlas_resource,
+                                                font_atlas_format,
                                                 cpu_desc);
         ctx.fonts().tex_id = TextureId::from(gpu_desc.ptr as usize);
 
@@ -207,17 +206,17 @@ impl Backend {
         })
     }
 
-        
+
     fn begin_frame(&mut self, ctx: &mut Context) {
         ctx.io_mut().delta_time = 1. / 144.;
     }
 
-    fn setup_render_state(&self, draw_data: &DrawData, fr: &Frame, 
+    fn setup_render_state(&self, draw_data: &DrawData, fr: &Frame,
                           frame: &d3d12::Frame,
-                          command_list: &ID3D12GraphicsCommandList5) 
+                          command_list: &ID3D12GraphicsCommandList5)
         -> Option<()> {
-        
-        let mvp: [f32; 16] = { 
+
+        let mvp: [f32; 16] = {
             let l = draw_data.display_pos[0];
             let r = draw_data.display_pos[0] + draw_data.display_size[0];
             let t = draw_data.display_pos[1];
@@ -240,7 +239,7 @@ impl Backend {
         }];
 
         let vbv = [ D3D12_VERTEX_BUFFER_VIEW {
-            BufferLocation: unsafe { 
+            BufferLocation: unsafe {
                 fr.vertex_buffer.as_ref().unwrap().res.GetGPUVirtualAddress()
             },
             SizeInBytes: (fr.vertex_buffer_count *
@@ -249,11 +248,11 @@ impl Backend {
         }];
 
         let ibv = D3D12_INDEX_BUFFER_VIEW {
-            BufferLocation: unsafe { 
+            BufferLocation: unsafe {
                 fr.index_buffer.as_ref().unwrap().res.GetGPUVirtualAddress()
             },
             SizeInBytes: (fr.index_buffer_count * size_of::<DrawIdx>()) as u32,
-            Format: if size_of::<DrawIdx>() == 2 { DXGI_FORMAT_R16_UINT } 
+            Format: if size_of::<DrawIdx>() == 2 { DXGI_FORMAT_R16_UINT }
                     else { DXGI_FORMAT_R32_UINT}
         };
 
@@ -269,14 +268,14 @@ impl Backend {
             command_list.SetGraphicsRoot32BitConstants(0, 16,
                                                        mvp.as_ptr() as _, 0);
             command_list.OMSetBlendFactor(&[0., 0., 0., 0.]);
-            command_list.OMSetRenderTargets(1, &frame.render_target_descriptor, 
+            command_list.OMSetRenderTargets(1, &frame.render_target_descriptor,
                                             BOOL(0), null());
         }
 
         Some(())
     }
 
-    fn render(&mut self, draw_data: &DrawData, d3d12: &d3d12::Context, 
+    fn render_internal(&mut self, draw_data: &DrawData, d3d12: &d3d12::Context,
               frame: &d3d12::Frame, frame_index: u32) -> Option<()> {
 
         let fr = &mut self.frames[frame_index as usize];
@@ -339,7 +338,7 @@ impl Backend {
             assert!(idx_it.len() == 0);
         });
 
-        
+
         let command_list = d3d12.create_graphics_command_list(frame)?;
         let fr = &self.frames[frame_index as usize];
         self.setup_render_state(draw_data, fr, frame, &command_list)?;
@@ -352,8 +351,8 @@ impl Backend {
             for cmd in list.commands() {
                 use imgui::internal::RawWrapper;
                 match cmd {
-                    DrawCmd::Elements { 
-                        count, 
+                    DrawCmd::Elements {
+                        count,
                         cmd_params: DrawCmdParams {
                             clip_rect,
                             texture_id,
@@ -362,12 +361,12 @@ impl Backend {
                             ..
                         }
                     } => {
-                        let clip_min = [clip_rect[0] - clip_off[0], 
+                        let clip_min = [clip_rect[0] - clip_off[0],
                                         clip_rect[1] - clip_off[1]];
 
-                        let clip_max = [clip_rect[2] - clip_off[0], 
+                        let clip_max = [clip_rect[2] - clip_off[0],
                                         clip_rect[3] - clip_off[1]];
-                        if clip_max[0] <= clip_min[0] || 
+                        if clip_max[0] <= clip_min[0] ||
                             clip_max[1] <= clip_min[1] {
                             continue;
                         }
@@ -379,15 +378,15 @@ impl Backend {
                             bottom: clip_max[1] as i32,
                         }];
 
-                        let tex = D3D12_GPU_DESCRIPTOR_HANDLE { 
+                        let tex = D3D12_GPU_DESCRIPTOR_HANDLE {
                             ptr: texture_id.id() as u64,
                         };
 
                         unsafe {
                             command_list.SetGraphicsRootDescriptorTable(1, tex);
                             command_list.RSSetScissorRects(&rect);
-                            command_list.DrawIndexedInstanced(count as u32, 1, 
-                                (idx_offset + global_idx_offset) as u32, 
+                            command_list.DrawIndexedInstanced(count as u32, 1,
+                                (idx_offset + global_idx_offset) as u32,
                                 (vtx_offset + global_vtx_offset) as i32, 0);
                         }
                     }
@@ -405,12 +404,12 @@ impl Backend {
 
         let barriers = [
             d3d12::ResourceBarrier::transition(
-                frame.render_target_resource.as_ref().unwrap(), 
+                frame.render_target_resource.as_ref().unwrap(),
                 d3d12::D3D12_RESOURCE_STATE_RENDER_TARGET,
                 d3d12::D3D12_RESOURCE_STATE_PRESENT),
         ];
-        
-        
+
+
         unsafe {
             command_list.ResourceBarrier(&barriers);
             command_list.Close().ok()?;
@@ -422,19 +421,19 @@ impl Backend {
         Some(())
     }
 
-    pub fn frame<F: FnMut(&mut Ui)>(&mut self, ctx: &mut Context, 
-                                    d3d12: &d3d12::Context, 
-                                    frame: &d3d12::Frame, 
-                                    frame_index: u32,
-                                    mut func: F) -> Option<()> {
-        self.begin_frame(ctx);
-
-        func(ctx.frame());
-
+    pub fn render(&mut self, ctx: &mut Context,
+                  d3d12: &d3d12::Context,
+                  frame: &d3d12::Frame,
+                  frame_index: u32) -> Option<()> {
         let draw_data = ctx.render();
-        self.render(&draw_data, d3d12, frame, frame_index)?;
-
+        self.render_internal(&draw_data, d3d12, frame, frame_index)?;
         Some(())
+    }
+
+    pub fn frame<F: FnMut(&mut Ui)>(&mut self, ctx: &mut Context,
+                                    mut func: F) {
+        self.begin_frame(ctx);
+        func(ctx.frame());
     }
 }
 

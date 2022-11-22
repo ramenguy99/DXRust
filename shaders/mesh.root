@@ -6,4 +6,6 @@
     "CBV(b0),"\
     "RootConstants(num32BitConstants=1, b1),"\
     "SRV(t0),"\
+    "DescriptorTable(SRV(t0, numDescriptors=unbounded, space=1, offset=7, flags=DESCRIPTORS_VOLATILE)),"\
+    "StaticSampler(s0, filter = FILTER_MIN_MAG_MIP_LINEAR),"\
 

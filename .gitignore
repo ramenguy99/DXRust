@@ -1,2 +1,9 @@
 /target
 /res
+/agility
+
+.vs
+.vscode
+Cargo.lock
+unused
+notes.txt

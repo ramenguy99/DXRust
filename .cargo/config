@@ -1,0 +1,3 @@
+[build]
+rustflags = ["-Z", "export-executable-symbols"]
+

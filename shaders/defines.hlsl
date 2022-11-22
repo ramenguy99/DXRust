@@ -6,6 +6,10 @@ typedef int2 ivec2;
 typedef int3 ivec3;
 typedef int4 ivec4;
 
+typedef int2 uvec2;
+typedef int3 uvec3;
+typedef int4 uvec4;
+
 typedef float3x3 mat3;
 typedef matrix mat4;
 

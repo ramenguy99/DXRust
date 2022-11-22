@@ -4,14 +4,14 @@ import subprocess
 SHADERS_SOURCE_DIR="shaders"
 SHADERS_OUT_DIR="res"
 
-DXC="C:\\Users\\dmylo\\Desktop\\Code\\D3D12\\dependencies\\dxc\\bin\\x64\\dxc.exe"
+DXC="dxc.exe"
 DXC_FLAGS=""
 
 version = "6_3"
 
 def cmd(command):
     print(command)
-    p = subprocess.run(command, shell=True, text=True, stdout=subprocess.PIPE, 
+    p = subprocess.run(command, shell=True, text=True, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT)
 
     if p.returncode != 0:
@@ -20,6 +20,8 @@ def cmd(command):
         exit(1)
 
 output = []
+if SHADERS_OUT_DIR:
+    os.makedirs(SHADERS_OUT_DIR, exist_ok=True)
 
 for f in os.listdir(SHADERS_SOURCE_DIR):
     root, ext = os.path.splitext(f)

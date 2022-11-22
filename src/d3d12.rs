@@ -11,9 +11,8 @@ use core::ffi::c_void;
 use core::cell::Cell;
 use core::mem::size_of;
 
+
 use math::mat::Mat4;
-
-
 pub use windows::Win32::Graphics::{
     Direct3D::*,
     Direct3D12::*,
@@ -25,7 +24,8 @@ pub use windows::Win32::Graphics::{
 pub static D3D12SDKVersion: u32 = 606;
 
 #[no_mangle]
-pub static D3D12SDKPath: &[u8] = b"..\\..\\agility\\agility\\build\\native\\bin\\x64\\";
+pub static D3D12SDKPath: &[u8] =
+    b"..\\..\\agility\\agility\\build\\native\\bin\\x64\\";
 
 pub const BACKBUFFER_COUNT: u32 = 3;
 const GPU_VALIDATION_ENABLED: bool = false;
@@ -45,7 +45,7 @@ impl<'a> Shader<'a> {
     pub fn bytecode(&self) -> D3D12_SHADER_BYTECODE {
         D3D12_SHADER_BYTECODE {
             pShaderBytecode: self.data.as_ptr() as *const c_void,
-            BytecodeLength: self.data.len(), 
+            BytecodeLength: self.data.len(),
         }
     }
 }
@@ -62,12 +62,14 @@ pub struct DescriptorHeap {
     end: D3D12_CPU_DESCRIPTOR_HANDLE,
 }
 
+#[allow(dead_code)]
 struct AccelerationStructureBuffers {
     scratch: ID3D12Resource,
     acceleration_structure: ID3D12Resource,
     instance_desc: Option<ID3D12Resource>,
 }
 
+#[allow(dead_code)]
 pub struct AccelerationStructure {
     pub tlas: ID3D12Resource,
     pub blas: ID3D12Resource,
@@ -112,7 +114,7 @@ impl Context {
         let mut debug_interface: Option<ID3D12Debug1> = None;
 
         unsafe { D3D12GetDebugInterface(&mut debug_interface).ok()? }
-        
+
         let debug_interface = debug_interface?;
 
         unsafe {
@@ -123,22 +125,22 @@ impl Context {
         }
 
         let mut device: Option<ID3D12Device5> = None;
-        
-        unsafe { 
-            D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_1, &mut device).ok()?; 
+
+        unsafe {
+            D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_1, &mut device).ok()?;
         }
-    
+
         let device = device?;
 
-        
+
         let info_queue: ID3D12InfoQueue = device.cast().ok()?;
         unsafe {
-            info_queue.SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, 
+            info_queue.SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR,
                                           true).ok()?;
-            info_queue.SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, 
+            info_queue.SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION,
                                           true).ok()?;
         }
-        
+
 
         let command_queue: ID3D12CommandQueue = unsafe {
             device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
@@ -160,9 +162,9 @@ impl Context {
             ..Default::default()
         };
         let swapchain: IDXGISwapChain3 = unsafe {
-            factory.CreateSwapChainForHwnd(&command_queue, 
-                                           window.handle, 
-                                           &swapchain_desc, 
+            factory.CreateSwapChainForHwnd(&command_queue,
+                                           window.handle,
+                                           &swapchain_desc,
                                            std::ptr::null(),
                                            None).ok()?
         }.cast().ok()?;
@@ -175,15 +177,15 @@ impl Context {
             }).ok()?
         };
 
-        let (rtv_heap_start, rtv_heap_increment) = unsafe { 
+        let (rtv_heap_start, rtv_heap_increment) = unsafe {
             (rtv_descriptor_heap.GetCPUDescriptorHandleForHeapStart(),
             device.GetDescriptorHandleIncrementSize(
                 D3D12_DESCRIPTOR_HEAP_TYPE_RTV) as usize)
         };
 
-        let mut frames = Vec::new(); 
+        let mut frames = Vec::new();
         for i in 0..BACKBUFFER_COUNT {
-            let render_target_resource: Option<ID3D12Resource> = unsafe { 
+            let render_target_resource: Option<ID3D12Resource> = unsafe {
                 Some(swapchain.GetBuffer(i).ok()?)
             };
 
@@ -212,7 +214,7 @@ impl Context {
         let fence: ID3D12Fence = unsafe {
             device.CreateFence(0, D3D12_FENCE_FLAG_NONE).ok()?
         };
-        
+
         let fence_event: HANDLE = unsafe {
             CreateEventA(null(), BOOL(0), BOOL(0), PCSTR(null())).ok()?
         };
@@ -231,7 +233,7 @@ impl Context {
         };
 
         let sync_command_list: ID3D12GraphicsCommandList5 = unsafe {
-            device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, 
+            device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
                                      &sync_allocator, None).ok()?
         };
 
@@ -262,7 +264,7 @@ impl Context {
                 CSU_DESCRIPTOR_HEAP_COUNT * csu_descriptor_increment)?
         };
 
-        Some(Self{ 
+        Some(Self{
             device,
             debug_interface,
             command_queue,
@@ -296,33 +298,33 @@ impl Context {
 
         // Resize swapchain
         unsafe {
-            self.swapchain.ResizeBuffers(0, width, height, 
+            self.swapchain.ResizeBuffers(0, width, height,
                                          DXGI_FORMAT_UNKNOWN, 0).unwrap();
         }
 
         // Recreate render target views
         for (i, f) in self.frames.iter_mut().enumerate() {
-            f.render_target_resource = unsafe { 
+            f.render_target_resource = unsafe {
                 Some(self.swapchain.GetBuffer(i as u32).ok()?)
             };
 
             unsafe {
                 self.device.CreateRenderTargetView(f.render_target_resource
-                                                   .as_ref().unwrap(), 
-                                                   null(), 
+                                                   .as_ref().unwrap(),
+                                                   null(),
                                                    f.render_target_descriptor);
             }
         }
         Some(())
     }
 
-    pub fn create_root_signature_from_shader(&self, shader: &Shader) 
+    pub fn create_root_signature_from_shader(&self, shader: &Shader)
         -> Option<ID3D12RootSignature> {
-        unsafe { self.device.CreateRootSignature(1, shader.data).ok() } 
+        unsafe { self.device.CreateRootSignature(1, shader.data).ok() }
     }
 
-    pub fn create_command_signature(&self, rs: &ID3D12RootSignature, stride: u32, 
-                                    descs: &[D3D12_INDIRECT_ARGUMENT_DESC]) 
+    pub fn create_command_signature(&self, rs: &ID3D12RootSignature, stride: u32,
+                                    descs: &[D3D12_INDIRECT_ARGUMENT_DESC])
         -> Option<ID3D12CommandSignature> {
         unsafe {
             let mut cs: Option<ID3D12CommandSignature> = None;
@@ -336,7 +338,7 @@ impl Context {
         }
     }
 
-    pub fn create_compute_pipelinestate(&self, shader: &Shader, 
+    pub fn create_compute_pipelinestate(&self, shader: &Shader,
                                         rs: &ID3D12RootSignature)
         -> Option<ID3D12PipelineState> {
         unsafe{
@@ -351,7 +353,7 @@ impl Context {
 
     pub fn create_resource(&self, resource_desc: &ResourceDesc,
                            initial_state: D3D12_RESOURCE_STATES,
-                           heap_type: D3D12_HEAP_TYPE) 
+                           heap_type: D3D12_HEAP_TYPE)
         -> Option<ID3D12Resource> {
         let mut result: Option<ID3D12Resource> = None;
         unsafe {
@@ -371,35 +373,35 @@ impl Context {
         result
     }
 
-    pub fn create_unordered_access_view(&self, dimension: D3D12_UAV_DIMENSION, 
+    pub fn create_unordered_access_view(&self, dimension: D3D12_UAV_DIMENSION,
                                    resource: &ID3D12Resource,
                                    descriptor: D3D12_CPU_DESCRIPTOR_HANDLE) {
-        unsafe { 
-            self.device.CreateUnorderedAccessView(resource, None, 
-                &D3D12_UNORDERED_ACCESS_VIEW_DESC { 
-                    ViewDimension: dimension, 
-                    ..Default::default() 
+        unsafe {
+            self.device.CreateUnorderedAccessView(resource, None,
+                &D3D12_UNORDERED_ACCESS_VIEW_DESC {
+                    ViewDimension: dimension,
+                    ..Default::default()
                 }, descriptor);
         }
     }
 
-    pub fn create_shader_resource_view_as(&self, 
+    pub fn create_shader_resource_view_as(&self,
                        resource: &ID3D12Resource,
                        descriptor: D3D12_CPU_DESCRIPTOR_HANDLE) {
-        unsafe { 
-            self.device.CreateShaderResourceView(None, 
-                &D3D12_SHADER_RESOURCE_VIEW_DESC { 
+        unsafe {
+            self.device.CreateShaderResourceView(None,
+                &D3D12_SHADER_RESOURCE_VIEW_DESC {
                     ViewDimension:
                         D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
-                    Shader4ComponentMapping: 
+                    Shader4ComponentMapping:
                         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
                     Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                        RaytracingAccelerationStructure: 
+                        RaytracingAccelerationStructure:
                             D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV {
                                 Location: resource.GetGPUVirtualAddress(),
                             }
                     },
-                    ..Default::default() 
+                    ..Default::default()
                 }, descriptor);
         }
     }
@@ -407,45 +409,45 @@ impl Context {
     pub fn create_shader_resource_view_buffer(&self, resource: &ID3D12Resource,
                                   format: DXGI_FORMAT, first: u64, count: u32,
                                   descriptor: D3D12_CPU_DESCRIPTOR_HANDLE) {
-        unsafe { 
-            self.device.CreateShaderResourceView(resource, 
-                &D3D12_SHADER_RESOURCE_VIEW_DESC { 
+        unsafe {
+            self.device.CreateShaderResourceView(resource,
+                &D3D12_SHADER_RESOURCE_VIEW_DESC {
                     Format: format,
                     ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
                     Shader4ComponentMapping:
                         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
                     Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                         Buffer: D3D12_BUFFER_SRV {
-                            FirstElement: first, 
+                            FirstElement: first,
                             NumElements: count,
                             StructureByteStride: 0,
                             Flags: D3D12_BUFFER_SRV_FLAG_NONE,
                         }
                     },
-                    ..Default::default() 
+                    ..Default::default()
                 }, descriptor);
         }
     }
 
-    pub fn create_shader_resource_view_structured_buffer(&self, 
+    pub fn create_shader_resource_view_structured_buffer(&self,
          resource: &ID3D12Resource, first: u64, count: u32, stride: u32,
          descriptor: D3D12_CPU_DESCRIPTOR_HANDLE) {
         unsafe {
-            self.device.CreateShaderResourceView(resource, 
-                &D3D12_SHADER_RESOURCE_VIEW_DESC { 
+            self.device.CreateShaderResourceView(resource,
+                &D3D12_SHADER_RESOURCE_VIEW_DESC {
                     Format: DXGI_FORMAT_UNKNOWN,
                     ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
                     Shader4ComponentMapping:
                         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
                     Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                         Buffer: D3D12_BUFFER_SRV {
-                            FirstElement: first, 
+                            FirstElement: first,
                             NumElements: count,
                             StructureByteStride: stride,
                             Flags: D3D12_BUFFER_SRV_FLAG_NONE,
                         }
                     },
-                    ..Default::default() 
+                    ..Default::default()
                 }, descriptor);
         }
     }
@@ -491,12 +493,12 @@ impl Context {
     }
 
 
-    pub fn alloc_csu_descriptor(&self) -> 
+    pub fn alloc_csu_descriptor(&self) ->
         Option<D3D12_CPU_DESCRIPTOR_HANDLE> {
         self.csu_descriptor_heap.alloc_descriptor()
     }
 
-    pub fn create_graphics_command_list(&self, frame: &Frame) -> 
+    pub fn create_graphics_command_list(&self, frame: &Frame) ->
         Option<ID3D12GraphicsCommandList5> {
 
         unsafe {
@@ -505,7 +507,7 @@ impl Context {
         }
     }
 
-    pub fn execute_command_lists(&self, 
+    pub fn execute_command_lists(&self,
                                  command_lists: &[Option<ID3D12CommandList>]) {
         unsafe {
             self.command_queue.ExecuteCommandLists(command_lists);
@@ -525,7 +527,7 @@ impl Context {
         unsafe {
             self.swapchain.Present(if vsync {1} else {0}, 0).ok()?;
 
-            self.command_queue.Signal(&self.fence, 
+            self.command_queue.Signal(&self.fence,
                                       frame.fence_value.get()).ok()?;
 
             let frame_index = self.swapchain.GetCurrentBackBufferIndex()
@@ -533,7 +535,7 @@ impl Context {
             let next_frame = &self.frames[frame_index];
 
             if self.fence.GetCompletedValue() < next_frame.fence_value.get() {
-                self.fence.SetEventOnCompletion(next_frame.fence_value.get(), 
+                self.fence.SetEventOnCompletion(next_frame.fence_value.get(),
                                                 self.fence_event).ok();
                 WaitForSingleObjectEx(self.fence_event, INFINITE, BOOL(0));
             }
@@ -552,7 +554,7 @@ impl Context {
             WaitForSingleObjectEx(self.fence_event, INFINITE, BOOL(0));
             value
         };
-        
+
         // Rest all frame fence values
         for f in self.frames.iter() {
             f.fence_value.set(value);
@@ -562,11 +564,11 @@ impl Context {
     }
 
 
-    pub fn create_dxr_state_object(&self, shader: &Shader) 
+    pub fn create_dxr_state_object(&self, shader: &Shader)
         -> Option<ID3D12StateObject> {
 
         let library_desc = D3D12_DXIL_LIBRARY_DESC {
-            DXILLibrary: shader.bytecode(), 
+            DXILLibrary: shader.bytecode(),
             ..Default::default()
         };
 
@@ -581,16 +583,16 @@ impl Context {
             pSubobjects: &library_subobject,
         };
 
-        unsafe { 
+        unsafe {
             self.device.CreateStateObject(&state_object_desc).ok()
         }
     }
 
     pub fn upload_tex2d_sync(&self, data: &[u8], width: u32, height: u32,
-                          format: DXGI_FORMAT, state: D3D12_RESOURCE_STATES) 
+                          format: DXGI_FORMAT, state: D3D12_RESOURCE_STATES)
     -> Option<ID3D12Resource> {
 
-        let upload_pitch = (width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) 
+        let upload_pitch = (width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1)
             & !(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
         let upload_size = height as usize * upload_pitch as usize;
 
@@ -608,9 +610,9 @@ impl Context {
             }
         });
 
-        let dest_resource = 
-            self.create_resource(&ResourceDesc::tex2d(format, width, 
-                                                      height, 
+        let dest_resource =
+            self.create_resource(&ResourceDesc::tex2d(format, width,
+                                                      height,
                                                       D3D12_RESOURCE_FLAG_NONE),
                                  D3D12_RESOURCE_STATE_COPY_DEST,
                                  D3D12_HEAP_TYPE_DEFAULT)?;
@@ -644,14 +646,14 @@ impl Context {
         unsafe {
             self.sync_command_list.CopyTextureRegion(&dest_loc, 0, 0, 0,
                                                      &upload_loc, null());
-            let barriers = [ 
+            let barriers = [
                 ResourceBarrier::transition(&dest_resource,
                                             D3D12_RESOURCE_STATE_COPY_DEST,
                                             state)
             ];
             self.sync_command_list.ResourceBarrier(&barriers);
             drop_barriers(barriers);
-            
+
         }
 
         self.wait_sync_commands();
@@ -659,9 +661,9 @@ impl Context {
         Some(dest_resource)
     }
 
-    pub fn upload_buffer_sync(&self, data: &[u8], state: D3D12_RESOURCE_STATES) 
+    pub fn upload_buffer_sync(&self, data: &[u8], state: D3D12_RESOURCE_STATES)
         -> Option<ID3D12Resource> {
-        
+
         if data.len() == 0 {
             return None;
         }
@@ -675,17 +677,17 @@ impl Context {
                                  D3D12_RESOURCE_STATE_COPY_DEST,
                                  D3D12_HEAP_TYPE_DEFAULT)?;
         unsafe {
-            self.sync_command_list.CopyBufferRegion(&dest_buffer, 0, 
-                                                    &upload_buffer.res, 0, 
+            self.sync_command_list.CopyBufferRegion(&dest_buffer, 0,
+                                                    &upload_buffer.res, 0,
                                                     data.len() as u64);
-            let barriers = [ 
+            let barriers = [
                 ResourceBarrier::transition(&dest_buffer,
                                             D3D12_RESOURCE_STATE_COPY_DEST,
                                             state)
             ];
             self.sync_command_list.ResourceBarrier(&barriers);
             drop_barriers(barriers);
-            
+
         }
 
         self.wait_sync_commands();
@@ -695,7 +697,7 @@ impl Context {
 
     pub fn wait_sync_commands(&self) -> Option<()> {
         unsafe {
-            let event: HANDLE = 
+            let event: HANDLE =
                 CreateEventA(null(), BOOL(0), BOOL(0), PCSTR(null())).ok()?;
 
             self.sync_command_list.Close().ok()?;
@@ -703,9 +705,9 @@ impl Context {
                 &[Some(self.sync_command_list.clone().into())]);
 
             self.sync_fence_value.set(self.sync_fence_value.get() + 1);
-            self.sync_queue.Signal(&self.sync_fence, 
+            self.sync_queue.Signal(&self.sync_fence,
                                    self.sync_fence_value.get()).ok()?;
-            self.sync_fence.SetEventOnCompletion(self.sync_fence_value.get(), 
+            self.sync_fence.SetEventOnCompletion(self.sync_fence_value.get(),
                                                  event).ok()?;
             WaitForSingleObjectEx(event, INFINITE, BOOL(0));
             CloseHandle(event);
@@ -717,19 +719,20 @@ impl Context {
         Some(())
     }
 
-    fn create_blas(&self, 
+    #[allow(dead_code)]
+    fn create_blas(&self,
                    positions_count: usize, positions_buffer: &ID3D12Resource,
                    indices_count: usize, index_buffer: &ID3D12Resource)
         -> Option<AccelerationStructureBuffers> {
-    
-        let geom_desc = unsafe { 
+
+        let geom_desc = unsafe {
             D3D12_RAYTRACING_GEOMETRY_DESC {
                 Type: D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
                 Flags: D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE,
                 Anonymous: D3D12_RAYTRACING_GEOMETRY_DESC_0 {
                     Triangles: D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC {
                         VertexBuffer: D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE {
-                            StartAddress: 
+                            StartAddress:
                                 positions_buffer.GetGPUVirtualAddress(),
                             StrideInBytes: 12,
                         },
@@ -743,7 +746,7 @@ impl Context {
                 },
             }
         };
-        
+
         let inputs = D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS {
             Type: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,
             Flags: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE,
@@ -753,35 +756,35 @@ impl Context {
                 pGeometryDescs: &geom_desc,
             },
         };
-        
+
         let mut info = Default::default();
         unsafe {
             self.device.GetRaytracingAccelerationStructurePrebuildInfo(
                 &inputs, &mut info);
         }
-    
+
         let buffers = AccelerationStructureBuffers {
             scratch: self.create_resource(
                          &ResourceDesc::uav_buffer(
-                             info.ScratchDataSizeInBytes as usize), 
+                             info.ScratchDataSizeInBytes as usize),
                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                          D3D12_HEAP_TYPE_DEFAULT)?,
 
             acceleration_structure: self.create_resource(
                          &ResourceDesc::uav_buffer(
-                             info.ResultDataMaxSizeInBytes as usize), 
+                             info.ResultDataMaxSizeInBytes as usize),
                          D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
                          D3D12_HEAP_TYPE_DEFAULT)?,
-            instance_desc: None, 
+            instance_desc: None,
         };
 
 
         let as_desc = unsafe {
             D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC {
                 Inputs: inputs,
-                DestAccelerationStructureData: 
+                DestAccelerationStructureData:
                     buffers.acceleration_structure.GetGPUVirtualAddress(),
-                ScratchAccelerationStructureData: 
+                ScratchAccelerationStructureData:
                     buffers.scratch.GetGPUVirtualAddress(),
                 SourceAccelerationStructureData: 0,
             }
@@ -801,7 +804,8 @@ impl Context {
         Some(buffers)
     }
 
-    fn create_tlas(&self, blas: &ID3D12Resource, transform: &Mat4) 
+    #[allow(dead_code)]
+    fn create_tlas(&self, blas: &ID3D12Resource, transform: &Mat4)
         -> Option<AccelerationStructureBuffers> {
 
         let mut inputs = D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS {
@@ -822,24 +826,24 @@ impl Context {
         // Create the buffers
         let buffers = AccelerationStructureBuffers {
             scratch: self.create_resource(
-                         &ResourceDesc::uav_buffer(info.ScratchDataSizeInBytes 
-                                                   as usize), 
+                         &ResourceDesc::uav_buffer(info.ScratchDataSizeInBytes
+                                                   as usize),
                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                          D3D12_HEAP_TYPE_DEFAULT)?,
 
             acceleration_structure: self.create_resource(
-                         &ResourceDesc::uav_buffer(info.ResultDataMaxSizeInBytes 
-                                                   as usize), 
+                         &ResourceDesc::uav_buffer(info.ResultDataMaxSizeInBytes
+                                                   as usize),
                          D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
                          D3D12_HEAP_TYPE_DEFAULT)?,
 
             instance_desc: Some(self.create_resource(
                          &ResourceDesc::buffer(
-                             size_of::<D3D12_RAYTRACING_INSTANCE_DESC>()), 
+                             size_of::<D3D12_RAYTRACING_INSTANCE_DESC>()),
                          D3D12_RESOURCE_STATE_GENERIC_READ,
                          D3D12_HEAP_TYPE_UPLOAD)?),
         };
- 
+
         let instance_desc: &mut D3D12_RAYTRACING_INSTANCE_DESC = unsafe {
             let mut ptr = null_mut();
             buffers.instance_desc.as_ref().unwrap().Map(0, null(), &mut ptr)
@@ -848,7 +852,7 @@ impl Context {
         };
 
         instance_desc._bitfield1 = 0 | 0xFF << 24 ;
-        instance_desc._bitfield2 = 0 | 
+        instance_desc._bitfield2 = 0 |
             D3D12_RAYTRACING_INSTANCE_FLAG_NONE.0 << 24;
 
         let t = transform;
@@ -858,17 +862,17 @@ impl Context {
             t.e[0][2], t.e[1][2], t.e[2][2], t.e[3][2],
         ];
         instance_desc.Transform.copy_from_slice(&transf);
-        instance_desc.AccelerationStructure = unsafe { 
-            blas.GetGPUVirtualAddress() 
+        instance_desc.AccelerationStructure = unsafe {
+            blas.GetGPUVirtualAddress()
         };
 
         // Unmap
         core::mem::drop(instance_desc);
         unsafe { buffers.instance_desc.as_ref().unwrap().Unmap(0, null()) };
-        
+
 
         unsafe {
-            inputs.Anonymous.InstanceDescs = 
+            inputs.Anonymous.InstanceDescs =
                 buffers.instance_desc.as_ref().unwrap().GetGPUVirtualAddress();
         }
 
@@ -876,9 +880,9 @@ impl Context {
         let as_desc = unsafe {
             D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC {
                 Inputs: inputs,
-                DestAccelerationStructureData: 
+                DestAccelerationStructureData:
                     buffers.acceleration_structure.GetGPUVirtualAddress(),
-                ScratchAccelerationStructureData: 
+                ScratchAccelerationStructureData:
                     buffers.scratch.GetGPUVirtualAddress(),
                 SourceAccelerationStructureData: 0,
             }
@@ -898,15 +902,16 @@ impl Context {
         Some(buffers)
     }
 
-    pub fn create_acceleration_structure(&self, 
-                                         positions_count: usize, 
-                                         positions_buffer: &ID3D12Resource, 
+    #[allow(dead_code)]
+    pub fn create_acceleration_structure(&self,
+                                         positions_count: usize,
+                                         positions_buffer: &ID3D12Resource,
                                          indices_count: usize,
                                          index_buffer: &ID3D12Resource,
                                          transform: &Mat4)
         -> Option<AccelerationStructure> {
 
-        let blas = self.create_blas(positions_count, positions_buffer, 
+        let blas = self.create_blas(positions_count, positions_buffer,
                                     indices_count, index_buffer)?;
         let tlas = self.create_tlas(&blas.acceleration_structure, transform)?;
         self.wait_sync_commands();
@@ -917,9 +922,9 @@ impl Context {
         })
     }
 
-    pub fn create_per_frame_constant_buffer(&self, wanted_size: usize) 
+    pub fn create_per_frame_constant_buffer(&self, wanted_size: usize)
         -> Option<PerFrameConstantBuffer> {
-        
+
         // Align to 256 bytes
         let size = wanted_size + (wanted_size.wrapping_neg() & 0xFF);
         assert!(size % 256 == 0 && size >= wanted_size);
@@ -942,9 +947,9 @@ impl Context {
         })
     }
 
-    pub fn create_mappable_resource(&self, size: usize) 
+    pub fn create_mappable_resource(&self, size: usize)
         -> Option<MappableResource> {
-        let res = self.create_resource(&ResourceDesc::buffer(size), 
+        let res = self.create_resource(&ResourceDesc::buffer(size),
                                        D3D12_RESOURCE_STATE_GENERIC_READ,
                                        D3D12_HEAP_TYPE_UPLOAD)?;
         Some(MappableResource {
@@ -953,7 +958,7 @@ impl Context {
         })
     }
 
-    pub fn create_depth_buffer(&self, width: u32, height: u32) 
+    pub fn create_depth_buffer(&self, width: u32, height: u32)
         -> Option<ID3D12Resource> {
         let mut result: Option<ID3D12Resource> = None;
         unsafe {
@@ -965,7 +970,7 @@ impl Context {
                 D3D12_HEAP_FLAG_NONE,
                 &ResourceDesc::depth_buffer(width, height).0,
                 D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                &D3D12_CLEAR_VALUE { 
+                &D3D12_CLEAR_VALUE {
                     Format: DXGI_FORMAT_D32_FLOAT,
                     Anonymous: D3D12_CLEAR_VALUE_0 {
                         DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
@@ -980,9 +985,9 @@ impl Context {
         result
     }
 
-    pub fn create_descriptor_heap(&self, count: usize, 
+    pub fn create_descriptor_heap(&self, count: usize,
                                   typ: D3D12_DESCRIPTOR_HEAP_TYPE,
-                                  shader_visible: bool) 
+                                  shader_visible: bool)
         -> Option<DescriptorHeap> {
 
         let heap: ID3D12DescriptorHeap = unsafe {
@@ -1033,14 +1038,14 @@ impl PerFrameConstantBuffer {
     }
 
     pub fn get_gpu_virtual_address(&self, index: u32) -> D3D12_GPU_VIRTUAL_ADDRESS {
-        unsafe { self.resource.GetGPUVirtualAddress() + 
+        unsafe { self.resource.GetGPUVirtualAddress() +
             self.size as u64 * index as u64 }
     }
 }
 
 pub struct ResourceDesc(D3D12_RESOURCE_DESC);
 impl ResourceDesc {
-    pub fn tex2d(format: DXGI_FORMAT, width: u32, height: u32, 
+    pub fn tex2d(format: DXGI_FORMAT, width: u32, height: u32,
                  flags: D3D12_RESOURCE_FLAGS) -> Self {
         Self(D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
@@ -1057,12 +1062,12 @@ impl ResourceDesc {
     }
 
     pub fn depth_buffer(width: u32, height: u32) -> Self {
-        Self::tex2d(DXGI_FORMAT_D32_FLOAT, width, height, 
+        Self::tex2d(DXGI_FORMAT_D32_FLOAT, width, height,
                     D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
     }
 
     pub fn uav2d(format: DXGI_FORMAT, width: u32, height: u32) -> Self {
-        Self::tex2d(format, width, height, 
+        Self::tex2d(format, width, height,
                     D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
     }
 
@@ -1146,7 +1151,7 @@ pub unsafe fn drop_barrier(b: D3D12_RESOURCE_BARRIER) {
     }
 }
 
-pub unsafe fn drop_barriers<const N: usize>(barriers: 
+pub unsafe fn drop_barriers<const N: usize>(barriers:
                                             [D3D12_RESOURCE_BARRIER; N]) {
     for b in barriers {
         drop_barrier(b);
@@ -1259,7 +1264,7 @@ impl<'a> Default for GraphicsPipelineState<'a> {
 
 impl Context {
     pub fn create_graphics_pipeline_state(&self, state: &GraphicsPipelineState,
-                                          rs: &ID3D12RootSignature) 
+                                          rs: &ID3D12RootSignature)
         -> Option<ID3D12PipelineState> {
 
         let mut pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
@@ -1307,7 +1312,7 @@ impl Context {
                 },
                 ..Default::default()
             },
-            InputLayout: D3D12_INPUT_LAYOUT_DESC { 
+            InputLayout: D3D12_INPUT_LAYOUT_DESC {
                 pInputElementDescs: state.input_layout.as_ptr(),
                 NumElements:        state.input_layout.len() as u32,
             },
@@ -1371,6 +1376,13 @@ impl DescriptorHeap {
                 ptr: top.ptr + self.increment,
             });
             Some(top)
+        }
+    }
+
+    pub fn offset(&self) -> usize {
+        unsafe {
+            (self.top.get().ptr - self.heap.GetCPUDescriptorHandleForHeapStart()
+                .ptr) / self.increment
         }
     }
 }

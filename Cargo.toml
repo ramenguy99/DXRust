@@ -6,12 +6,16 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-math = { path = "../math" }
-imgui = { path = "../imgui-rs/imgui" }
-gltf = "1.0.0"
+# Internal
+math = { path = "crates/math" }
+
+# External
+imgui =  { path = "dependencies/imgui-rs/imgui" }
+gltf = { version = "1.0.0", features = ["KHR_texture_transform", "KHR_lights_punctual"] }
+image = { version = "0.23.13", default-features = false, features = ["gif", "jpeg", "ico", "png", "pnm", "tga", "tiff", "webp", "bmp", "hdr", "dxt"] }
 
 [dependencies.windows]
-path = "../windows-rs/crates/libs/windows"
+version = "0.37.0"
 features = [
     "alloc",
     "Win32_Foundation",
