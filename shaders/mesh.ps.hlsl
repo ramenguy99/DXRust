@@ -4,7 +4,10 @@
 struct Constants {
     vec3 camera_position;
     vec3 camera_direction;
-    vec3 light_position;
+
+    vec3 light_direction;
+    float light_radiance;
+
     uint albedo_index;
     // vec3 diffuse_color;
 
@@ -67,30 +70,34 @@ float3 IntToColor(uint Index)
 [RootSignature(MyRS1)]
 float4 main(PS_INPUT input) : SV_Target
 {
-    vec3 light_p = g_constants.light_position;
+    vec3 light_d = g_constants.light_direction;
     vec3 camera_p = g_constants.camera_position;
     // vec3 diffuse = g_constants.diffuse_color;
 
     vec3 specular = vec3(1, 1, 1);
 
-    vec3 L = normalize(light_p - input.world_pos);
+    vec3 L = normalize(-light_d);
     vec3 N = normalize(input.normal);
     vec3 V = normalize(camera_p - input.world_pos);
-    vec3 H = normalize(L + V);
 
     vec3 ka = 0.1;
-    vec3 kd = max(dot(L, N), 0);
-    vec3 ks = pow(max(dot(N, H), 0), 16.0) * 0.0;
+    vec3 kd = max(dot(L, N), 0) * g_constants.light_radiance;
 
+    /*
+    vec3 H = normalize(L + V);
+
+    vec3 ks = pow(max(dot(N, H), 0), 16.0) * 0.0;
+    */
     // vec3 diff = IntToColor(g_draw_constants.index);
 
-    vec3 diff;
+    vec3 albedo;
     if(g_mesh_constants[g_draw_constants.index].albedo_index != 0xFFFFFFFF) {
-       diff = textures[g_mesh_constants[g_draw_constants.index].albedo_index].Sample(linear_sampler, input.uv).rgb;
+        albedo = textures[g_mesh_constants[g_draw_constants.index].albedo_index].Sample(linear_sampler, input.uv).rgb;
     } else {
-        diff = vec3(0.5, 0.1, 0.1);
+        albedo = vec3(0.5, 0.1, 0.1);
     }
-    vec3 color = diff * (ka + kd) + specular * ks;
+
+    vec3 color = albedo / PI * (ka + kd);// + specular * ks;
 
     return vec4(color, 1.0f);
 }

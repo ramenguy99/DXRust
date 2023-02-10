@@ -8,11 +8,11 @@ edition = "2021"
 [dependencies]
 # Internal
 math = { path = "crates/math" }
+scene = { path = "crates/scene" }
+asset = { path = "crates/asset" }
 
 # External
 imgui =  { path = "dependencies/imgui-rs/imgui" }
-gltf = { version = "1.0.0", features = ["KHR_texture_transform", "KHR_lights_punctual"] }
-image = { version = "0.23.13", default-features = false, features = ["gif", "jpeg", "ico", "png", "pnm", "tga", "tiff", "webp", "bmp", "hdr", "dxt"] }
 
 [dependencies.windows]
 version = "0.37.0"
@@ -32,8 +32,3 @@ features = [
     "Win32_UI_Controls",
 ]
 
-[profile.dev]
-incremental = true
-
-[profile.release]
-incremental = true

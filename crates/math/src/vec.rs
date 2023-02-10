@@ -1,6 +1,8 @@
 use core::ops;
 use core::fmt;
 
+use bytemuck::{Pod, Zeroable};
+
 macro_rules! vec_op_impl {
     ($trait: ident, $func: ident, $v: ident, $($e: ident),*) => {
         impl ops::$trait<$v> for $v {
@@ -118,7 +120,7 @@ macro_rules! vec_float_utils_impl {
 }
 
 macro_rules! vec3_utils_impl {
-    ($v: ident, $t: ident) => {
+    ($v: ident, $t: ident, $pi: expr) => {
         impl $v {
             #[inline]
             pub fn cross(self, b:$v) -> $v {
@@ -128,6 +130,27 @@ macro_rules! vec3_utils_impl {
                     z: self.x * b.y - self.y * b.x,
                 }
             }
+
+            pub fn spherical_to_direction(theta: $t, phi: $t) -> $v {
+                let (sin_theta, cos_theta) = theta.sin_cos();
+                let (sin_phi, cos_phi) = phi.sin_cos();
+
+                $v {
+                   x: sin_theta * cos_phi,
+                   y: sin_theta * sin_phi,
+                   z: cos_theta
+                }
+            }
+
+            pub fn direction_to_spherical(v: $v) -> ($t, $t) {
+                let theta = $t::acos(v.z);
+                let mut phi = $t::atan2(v.y, v.x);
+                if phi < 0. {
+                    phi += 2. * $pi;
+                }
+
+                (theta, phi)
+            }
         }
     }
 }
@@ -135,7 +158,7 @@ macro_rules! vec3_utils_impl {
 macro_rules! vec_impl {
     ($v: ident, $t: ident, $n: expr, $($e: ident),*) => {
 
-        #[derive(Debug, Default, Copy, Clone)]
+        #[derive(Debug, Default, Copy, Clone, Pod, Zeroable)]
         #[repr(C)]
         pub struct $v {
             $( pub $e : $t, )*
@@ -239,7 +262,7 @@ vec_float_utils_impl!(Vec2d, f64, x, y);
 vec_float_utils_impl!(Vec3d, f64, x, y, z);
 vec_float_utils_impl!(Vec4d, f64, x, y, z, w);
 
-vec3_utils_impl!(Vec3, f32);
-vec3_utils_impl!(Vec3d, f64);
+vec3_utils_impl!(Vec3, f32, core::f32::consts::PI);
+vec3_utils_impl!(Vec3d, f64, core::f64::consts::PI);
 
 

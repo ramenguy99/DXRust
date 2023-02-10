@@ -3,6 +3,8 @@ use core::fmt;
 use crate::vec::{Vec3, Vec4, Vec3d, Vec4d};
 use crate::mat::{Mat3, Mat3d, Mat4, Mat4d};
 
+use bytemuck::{Pod, Zeroable};
+
 // TODO:
 // [ ] from_euler, from_mat3, from_mat4
 // [ ] slerp / nlerp
@@ -12,7 +14,7 @@ use crate::mat::{Mat3, Mat3d, Mat4, Mat4d};
 macro_rules! quat_impl {
     ($name: ident, $t: ident, $v3: ident, $v: ident, $m: ident, $m4: ident) => {
 
-        #[derive(Debug, Default, Copy, Clone)]
+        #[derive(Debug, Default, Copy, Clone, Pod, Zeroable)]
         #[repr(C)]
         pub struct $name {
             pub x: $t,

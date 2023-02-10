@@ -5,7 +5,7 @@ use std::path::Path;
 use std::io::{BufReader, Cursor};
 use std::fs::File;
 
-use crate::scene::{Mesh, Scene, Image, Format, Material};
+use scene::{Mesh, Scene, Image, Format, Material};
 use math::{
     vec::{Vec2, Vec3},
     mat::Mat4,
@@ -97,12 +97,17 @@ pub fn import_file(path: &Path) -> Option<Scene> {
     let blob = gltf.blob.take().unwrap();
 
     for s in gltf.scenes() {
-        for n in s.nodes() {
+        for (i, n) in s.nodes().enumerate() {
+            println!("Node: {i}");
             import_node(&blob, &mut scene, n, Mat4::identity())?;
         }
     }
 
-    for (_i, img) in gltf.images().enumerate() {
+    println!("Importing images");
+
+    for (i, img) in gltf.images().enumerate() {
+        println!("Image: {i}");
+
         match img.source() {
             gltf::image::Source::View { view, mime_type: _ } => {
                 let begin = view.offset();

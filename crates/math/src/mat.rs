@@ -1,5 +1,7 @@
 use crate::vec::*;
 
+use bytemuck::{Pod, Zeroable};
+
 // #[cfg(not(any(feature = "depth_zero_one", feature = "depth_negative_one_one")))]
 // compile_error!("no math depth configuration");
 //
@@ -10,7 +12,7 @@ use crate::vec::*;
 macro_rules! mat_impl {
     ($m: ident, $t: ident, $v: ident, $n: literal) => {
 
-        #[derive(Debug, Default, Copy, Clone)]
+        #[derive(Pod, Zeroable, Default, Copy, Clone, Debug)]
         #[repr(C)]
         pub struct $m {
             pub e: [[$t; $n]; $n],

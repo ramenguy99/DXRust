@@ -1,0 +1,28 @@
+[package]
+name = "asset"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "asset"
+path = "src/lib.rs"
+
+[[bin]]
+name = "asset_builder"
+path = "src/main.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+scene = { path = "../scene" }
+math = { path = "../math" }
+lz4 = { version = "1.24.0"}
+gltf = { version = "1.0.0", features = ["KHR_texture_transform", "KHR_lights_punctual"] }
+image = { version = "0.23.13", default-features = false, features = ["gif", "jpeg", "ico", "png", "pnm", "tga", "tiff", "webp", "bmp", "hdr", "dxt"] }
+
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+incremental = true

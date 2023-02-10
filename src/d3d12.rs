@@ -99,6 +99,7 @@ pub struct Context {
     frames: Vec<Frame>,
     fence: ID3D12Fence,
     fence_event: HANDLE,
+    fence_value: Cell<u64>,
     sync_queue: ID3D12CommandQueue,
     sync_allocator: ID3D12CommandAllocator,
     pub sync_command_list: ID3D12GraphicsCommandList5,
@@ -274,6 +275,7 @@ impl Context {
             rtv_descriptor_heap,
             fence,
             fence_event,
+            fence_value: Cell::new(0),
             sync_queue,
             sync_allocator,
             sync_command_list,
@@ -518,6 +520,12 @@ impl Context {
         let index = unsafe { self.swapchain.GetCurrentBackBufferIndex()};
         let frame = self.frames.get(index as usize)?;
 
+        // Set fence_value + 1 as the target value for this frame.
+        // We wait for the fence to reach this value before rendering
+        // again to this frame.
+        self.fence_value.set(self.fence_value.get() + 1);
+        frame.fence_value.set(self.fence_value.get());
+
         unsafe { frame.command_allocator.Reset().ok()? };
 
         Some((frame, index))
@@ -527,20 +535,19 @@ impl Context {
         unsafe {
             self.swapchain.Present(if vsync {1} else {0}, 0).ok()?;
 
-            self.command_queue.Signal(&self.fence,
-                                      frame.fence_value.get()).ok()?;
+            // Signal the fence with the target value for this frame.
+            self.command_queue.Signal(&self.fence, frame.fence_value.get()).ok()?;
 
             let frame_index = self.swapchain.GetCurrentBackBufferIndex()
                 as usize;
             let next_frame = &self.frames[frame_index];
 
+            // Wait for the fence to reach the target value for the next frame.
             if self.fence.GetCompletedValue() < next_frame.fence_value.get() {
                 self.fence.SetEventOnCompletion(next_frame.fence_value.get(),
                                                 self.fence_event).ok();
                 WaitForSingleObjectEx(self.fence_event, INFINITE, BOOL(0));
             }
-
-            next_frame.fence_value.set(frame.fence_value.get() + 1);
         }
 
         Some(())

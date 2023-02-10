@@ -23,6 +23,7 @@ pub enum MouseButton {
 pub enum Event {
     Quit,
     KeyPress(Option<char>),
+    KeyRelease(Option<char>),
     MouseMove(i32, i32),
     MousePress(MouseButton),
     MouseRelease(MouseButton),
@@ -81,6 +82,11 @@ impl Window {
                 WM_KEYDOWN => {
                     let key = char::from_u32(message.wParam.0 as u32);
                     Some(Event::KeyPress(key))
+                }
+
+                WM_KEYUP => {
+                    let key = char::from_u32(message.wParam.0 as u32);
+                    Some(Event::KeyRelease(key))
                 }
 
                 WM_MOUSEMOVE => {

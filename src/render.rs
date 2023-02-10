@@ -1,11 +1,11 @@
-
 use core::ptr::{null, null_mut};
 use core::mem::{size_of, size_of_val};
 
 use math::vec::{Vec2, Vec3};
 use math::mat::{Mat4};
 
-use crate::scene::{Mesh, Scene};
+use scene::{Mesh, Scene};
+
 use crate::d3d12;
 use crate::shaders;
 use crate::win32;
@@ -21,8 +21,8 @@ pub struct SceneConstants {
     pub camera_direction: Vec3,
     pub _padding1: f32,
 
-    pub light_position: Vec3,
-    pub _padding2: f32,
+    pub light_direction: Vec3,
+    pub light_radiance: f32,
 
     pub diffuse_color: Vec3,
     pub film_dist: f32,

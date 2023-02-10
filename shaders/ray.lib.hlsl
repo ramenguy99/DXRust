@@ -16,13 +16,13 @@ TriangleHitGroup HitGroup =
 
 RaytracingShaderConfig  MyShaderConfig =
 {
-    16, // max payload size
+    56, // max payload size
     8   // max attribute size
 };
 
 RaytracingPipelineConfig MyPipelineConfig =
 {
-    1 // max trace recursion depth
+    2 // max trace recursion depth
 };
 
 
@@ -49,7 +49,8 @@ struct Constants {
 
     vec3 camera_direction;
 
-    vec3 light_position;
+    vec3 light_direction;
+    float light_radiance;
 
     vec3 diffuse_color;
     float film_dist;
@@ -66,7 +67,10 @@ ConstantBuffer<Constants> g_constants: register(b0);
 struct HitInfo
 {
     vec3 color;
+    vec3 throughput;
+    vec3 direction;
     float distance;
+    uvec4 seed;
 };
 
 inline void GenerateCameraRay(uint2 index, float2 jitter, out float3 origin, out float3 direction)
@@ -100,6 +104,7 @@ void RayGeneration()
     uvec2 p = DispatchRaysIndex().xy;
     uvec4 seed = uvec4(p, uint(g_constants.frame_index), uint(p.x) + uint(p.y));
     rand(seed);
+
     float2 jitter = rand2(seed);
 
     vec3 dir;
@@ -112,8 +117,24 @@ void RayGeneration()
     ray.TMin = 0.01;
     ray.TMax = 1000.0;
 
-    HitInfo payload = { vec3(0, 0, 0), 0.0 };
-    TraceRay(scene, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, ~0, 0, 1, 0, ray, payload);
+    HitInfo payload = {
+        vec3(0, 0, 0),
+        vec3(1, 1, 1),
+        vec3(0, 0, 0),
+        0.0,
+        seed,
+    };
+
+    for(int i = 0; i < 8; i++) {
+        TraceRay(scene, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, ~0, 0, 1, 0, ray, payload);
+
+        if(payload.distance < 0 || all(payload.throughput <= 0.001)) {
+            break;
+        } else {
+            ray.Origin += payload.distance * ray.Direction;
+            ray.Direction = payload.direction;
+        }
+    }
 
     vec3 old_color = output[p].xyz;
     float samples = g_constants.samples;
@@ -125,7 +146,6 @@ void RayGeneration()
 [shader("miss")]
 void Miss(inout HitInfo payload)
 {
-    payload.color = vec3(0.1, 0.1, 0.1);
     payload.distance = -1.0;
 }
 
@@ -154,6 +174,19 @@ float3 IntToColor(uint Index)
 	return Color * (1.0f / 255.0f);
 }
 
+mat3 frameFromDirection(vec3 a) {
+    vec3 b, c;
+    if (abs(a.x) > abs(a.y)) {
+        float invLen = 1.0f / sqrt(a.x * a.x + a.z * a.z);
+        c = vec3(a.z * invLen, 0.0f, -a.x * invLen);
+    } else {
+        float invLen = 1.0f / sqrt(a.y * a.y + a.z * a.z);
+        c = vec3(0.0f, a.z * invLen, -a.y * invLen);
+    }
+    b = cross(c, a);
+    return mat3(b, c, a);
+}
+
 [shader("closesthit")]
 void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes attribs)
 {
@@ -178,27 +211,65 @@ void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes 
         normals_buffer[indices.z + vertex_offset] * barycentrics.y;
 
 
-    vec3 light_p = g_constants.light_position;
     vec3 camera_p = g_constants.camera_position;
     vec3 diffuse = g_constants.diffuse_color;
 
     vec3 specular = vec3(1, 1, 1);
 
-    vec3 L = normalize(light_p - position);
+    vec3 L = -g_constants.light_direction;
+
+    RayDesc shadow_ray;
+    shadow_ray.Origin = position;
+    shadow_ray.Direction = L;
+    shadow_ray.TMin = 0.01;
+    shadow_ray.TMax = 1000.0;
+    HitInfo shadow_payload = {
+        vec3(0, 0, 0),
+        vec3(0, 0, 0),
+        vec3(0, 0, 0),
+        0.0,
+        uvec4(0, 0, 0, 0),
+    };
+
+    TraceRay(scene,
+        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
+        RAY_FLAG_CULL_BACK_FACING_TRIANGLES |
+        RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, ~0, 0, 1, 0,
+        shadow_ray, shadow_payload);
+
     vec3 N = normalize(mul((float3x3)ObjectToWorld(), normal));
-    vec3 V = normalize(camera_p - position);
-    vec3 H = normalize(L + V);
 
-    vec3 ka = 0.1;
-    vec3 kd = max(dot(L, N), 0);
-    vec3 ks = pow(max(dot(N, H), 0), 16.0) * 0.0;
+    vec3 albedo = 1.0;
 
-    // vec3 color = diffuse * (ka + kd) + specular * ks;
-    // vec3 color = specular * (PrimitiveIndex() / 100000.0);
-    // vec3 color = N * 0.5 + 1.0;
-    // vec3 color = vec3(barycentrics, 1- barycentrics.x - barycentrics.y);
-    // vec3 diff = IntToColor(mesh_index);
+    if(instance.albedo_index != 0xFFFFFFFF) {
+        vec2 uv =
+            uvs_buffer[indices.x + vertex_offset] * (1 - barycentrics.x - barycentrics.y) +
+            uvs_buffer[indices.y + vertex_offset] * barycentrics.x +
+            uvs_buffer[indices.z + vertex_offset] * barycentrics.y;
+       albedo = textures[instance.albedo_index].SampleLevel(linear_sampler, uv, 0.0f).rgb;
+    }
 
+    vec3 radiance = g_constants.light_radiance;
+
+    if(shadow_payload.distance < 0.0) {
+        payload.color += payload.throughput * max(dot(N, L), 0) * radiance * albedo / PI;
+    }
+
+        /*
+        vec3 V = normalize(camera_p - position);
+        vec3 H = normalize(L + V);
+
+        vec3 ka = 0.1;
+        vec3 kd = max(dot(L, N), 0);
+        vec3 ks = pow(max(dot(N, H), 0), 16.0) * 0.0;
+
+        // vec3 color = diffuse * (ka + kd) + specular * ks;
+        // vec3 color = specular * (PrimitiveIndex() / 100000.0);
+        // vec3 color = N * 0.5 + 1.0;
+        // vec3 color = vec3(barycentrics, 1- barycentrics.x - barycentrics.y);
+        vec3 diff = 1.0;
+*/
+/*
     vec3 diff;
     if(instance.albedo_index != 0xFFFFFFFF) {
         vec2 uv =
@@ -212,7 +283,9 @@ void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes 
     }
 
     vec3 color = diff * (ka + kd) + specular * ks;
-    payload.color = color;
-
+*/
+    mat3 frame = frameFromDirection(N);
+    payload.direction = mul(frame, sampleCosineWeightedHemisphere(payload.seed));
+    payload.throughput *= albedo;
     payload.distance = RayTCurrent();
 }
