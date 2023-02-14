@@ -37,7 +37,15 @@ Buffer<vec2> uvs_buffer: register(t3);
 struct MeshInstance {
     uint vertex_offset;
     uint index_offset;
+
     uint albedo_index;
+    uint normal_index;
+    uint specular_index;
+    uint emissive_index;
+
+    vec4 albedo_value;
+    vec4 specular_value;
+    vec4 emissive_value;
 };
 
 StructuredBuffer<MeshInstance> instances_buffer: register(t4);
@@ -60,6 +68,8 @@ struct Constants {
 
     u32 frame_index;
     u32 samples;
+    float emissive_multiplier;
+    u32 debug;
 };
 
 ConstantBuffer<Constants> g_constants: register(b0);
@@ -133,6 +143,10 @@ void RayGeneration()
         } else {
             ray.Origin += payload.distance * ray.Direction;
             ray.Direction = payload.direction;
+        }
+
+        if(g_constants.debug) {
+            break;
         }
     }
 
@@ -214,8 +228,6 @@ void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes 
     vec3 camera_p = g_constants.camera_position;
     vec3 diffuse = g_constants.diffuse_color;
 
-    vec3 specular = vec3(1, 1, 1);
-
     vec3 L = -g_constants.light_direction;
 
     RayDesc shadow_ray;
@@ -238,15 +250,17 @@ void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes 
         shadow_ray, shadow_payload);
 
     vec3 N = normalize(mul((float3x3)ObjectToWorld(), normal));
+    vec2 uv =
+        uvs_buffer[indices.x + vertex_offset] * (1 - barycentrics.x - barycentrics.y) +
+        uvs_buffer[indices.y + vertex_offset] * barycentrics.x +
+        uvs_buffer[indices.z + vertex_offset] * barycentrics.y;
 
     vec3 albedo = 1.0;
 
     if(instance.albedo_index != 0xFFFFFFFF) {
-        vec2 uv =
-            uvs_buffer[indices.x + vertex_offset] * (1 - barycentrics.x - barycentrics.y) +
-            uvs_buffer[indices.y + vertex_offset] * barycentrics.x +
-            uvs_buffer[indices.z + vertex_offset] * barycentrics.y;
        albedo = textures[instance.albedo_index].SampleLevel(linear_sampler, uv, 0.0f).rgb;
+    } else {
+        albedo = instance.albedo_value.rgb;
     }
 
     vec3 radiance = g_constants.light_radiance;
@@ -255,6 +269,30 @@ void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes 
         payload.color += payload.throughput * max(dot(N, L), 0) * radiance * albedo / PI;
     }
 
+    vec3 emissive = 0;
+    if(instance.emissive_index != 0xFFFFFFFF) {
+        emissive = textures[instance.emissive_index].SampleLevel(linear_sampler, uv, 0.0f).rgb;
+    } else {
+        emissive = instance.emissive_value.rgb;
+    }
+    payload.color += payload.throughput * emissive * g_constants.emissive_multiplier;
+
+    vec2 specular = 0;
+    if(instance.specular_index != 0xFFFFFFFF) {
+        specular = textures[instance.specular_index].SampleLevel(linear_sampler, uv, 0.0f).gb;
+    } else {
+        specular = instance.specular_value.gb;
+    }
+
+    float roughness = specular.r;
+    float metallic = specular.g;
+
+    switch(g_constants.debug) {
+        case 1: payload.color = roughness; break;
+        case 2: payload.color = metallic; break;
+        case 3: payload.color = emissive; break;
+        case 4: payload.color = N * 0.5 + 1.0; break;
+    }
         /*
         vec3 V = normalize(camera_p - position);
         vec3 H = normalize(L + V);

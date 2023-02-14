@@ -343,8 +343,8 @@ impl Backend {
         let fr = &self.frames[frame_index as usize];
         self.setup_render_state(draw_data, fr, frame, &command_list)?;
 
-        let global_vtx_offset: usize = 0;
-        let global_idx_offset: usize = 0;
+        let mut global_vtx_offset: usize = 0;
+        let mut global_idx_offset: usize = 0;
         let clip_off = draw_data.display_pos;
 
         for list in draw_data.draw_lists() {
@@ -400,6 +400,9 @@ impl Backend {
                     },
                 }
             }
+
+            global_idx_offset += list.idx_buffer().len();
+            global_vtx_offset += list.vtx_buffer().len();
         }
 
         let barriers = [

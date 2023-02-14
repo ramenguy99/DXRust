@@ -1,16 +1,16 @@
 use core::ptr::{null, null_mut};
 use core::mem::{size_of, size_of_val};
 
-use math::vec::{Vec2, Vec3};
+use math::vec::{Vec2, Vec3, Vec4};
 use math::mat::{Mat4};
 
-use scene::{Mesh, Scene};
+use scene::{Mesh, Scene, MaterialParameter};
 
 use crate::d3d12;
 use crate::shaders;
 use crate::win32;
 
-const MAX_SAMPLES: u32 = 128;
+const MAX_SAMPLES: u32 = 1024;
 
 #[derive(Default, Clone, Copy)]
 #[repr(C)]
@@ -32,6 +32,8 @@ pub struct SceneConstants {
 
     pub frame_index: u32,
     pub samples: u32,
+    pub emissive_multiplier: f32,
+    pub debug: u32,
 }
 
 pub trait Pipeline {
@@ -128,7 +130,10 @@ impl Raster {
             indices_buf  .extend_from_slice(&m.indices);
             mesh_constants_buf.push(MeshConstants {
                 transform: m.transform,
-                albedo_index: m.material.albedo_texture,
+                albedo_index: match m.material.base_color {
+                    MaterialParameter::Texture(v) => v,
+                    _ => u32::MAX,
+                }
             });
 
             commands_buf.push(DrawArgs {
@@ -404,11 +409,20 @@ impl Pipeline for Raster {
 }
 
 #[allow(dead_code)]
+#[derive(Default)]
 #[repr(C)]
 struct RayMeshInstance {
     vertex_offset: u32,
     index_offset: u32,
     albedo_index: u32,
+    normal_index: u32,
+
+    specular_index: u32,
+    emissive_index: u32,
+
+    albedo_value: Vec4,
+    specular_value: Vec4,
+    emissive_value: Vec4,
 }
 
 #[allow(dead_code)]
@@ -536,11 +550,36 @@ impl Ray {
             normals_buf  .extend_from_slice(&m.normals  );
             uvs_buf      .extend_from_slice(&m.uvs      );
             indices_buf  .extend_from_slice(&m.indices  );
-            mesh_instances_buf.push(RayMeshInstance {
+
+            let mut mesh_instance = RayMeshInstance {
                 vertex_offset: current_vertex,
                 index_offset: current_index,
-                albedo_index: m.material.albedo_texture,
-            });
+                ..Default::default()
+            };
+
+            macro_rules! material {
+                ($m: ident, $index: ident, $value: ident, $default: expr) => {
+                    match m.material.$m {
+                        scene::MaterialParameter::Texture(v) => {
+                            mesh_instance.$index = v;
+                        },
+                        scene::MaterialParameter::Vec4(v) => {
+                            mesh_instance.$index  = u32::MAX;
+                            mesh_instance.$value = v;
+                        }
+                        _ => {
+                            mesh_instance.$index  = u32::MAX;
+                            mesh_instance.$value = $default;
+                        }
+                    };
+                };
+            }
+
+            material!(base_color, albedo_index,   albedo_value,   Vec4::new(1.0, 0.0, 1.0, 1.0));
+            material!(specular,   specular_index, specular_value, Vec4::new(0.0, 1.0, 0.0, 0.0));
+            material!(emissive,   emissive_index, emissive_value, Vec4::new(0.0, 0.0, 0.0, 0.0));
+
+            mesh_instances_buf.push(mesh_instance);
 
             current_vertex = current_vertex.checked_add(m.positions.len() as u32)
                 .expect("Overflow");

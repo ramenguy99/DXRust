@@ -6,6 +6,7 @@ use math::vec::{Vec2, Vec3, Vec4};
 use math::mat::{Mat4};
 use scene::{Camera, Direction};
 use render::{Raster, Ray, Pipeline, SceneConstants};
+use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
 
 mod win32;
 mod d3d12;
@@ -30,7 +31,7 @@ fn main() {
     //     std::process::exit(1);
     // });
 
-    let path = std::env::args().nth(1).unwrap_or(String::from("crates/asset/serialized.lz4"));
+    let path = std::env::args().nth(1).unwrap_or(String::from("crates/asset/bistro.lz4"));
 
     let mut scene = asset::load_scene_from_file(&Path::new(&path))
         .expect("Failed to open asset file");
@@ -66,7 +67,7 @@ fn main() {
     let ray = Box::new(Ray::init(&window, &d3d12, &scene));
 
     assert!(d3d12.csu_descriptor_heap.offset() == 7);
-    let mut textures = Vec::new();
+    let mut textures: Vec<ID3D12Resource> = Vec::new();
     for img in &scene.images {
         let descriptor = d3d12.alloc_csu_descriptor().unwrap();
         let format = match img.format {
@@ -78,6 +79,7 @@ fn main() {
         d3d12.create_shader_resource_view_tex2d(&texture, format, descriptor);
         textures.push(texture);
     }
+    d3d12.wait_sync_commands();
 
     let mut ray_scene:  Box<dyn Pipeline> = ray;
     let mut raster_scene: Box<dyn Pipeline> = raster;
@@ -100,6 +102,7 @@ fn main() {
         light_radiance: 5.0,
         diffuse_color: Vec3::new(0., 1., 0.),
         film_dist: 1.0,
+        emissive_multiplier: 1.0,
         ..Default::default()
     };
 
@@ -132,6 +135,12 @@ fn main() {
             use win32::{Event::*, MouseButton};
             match event {
                 Quit => break 'main,
+                KeyPress(Some(i @ ('1' | '2' | '3' | '4' | '5'))) => {
+                    let i = i.to_digit(10).unwrap() - 1;
+                    constants.debug = i;
+                    reset = true;
+                },
+
                 KeyPress(Some('W')) => {
                     direction = Direction::Forward;
                     moving = true;
@@ -248,6 +257,9 @@ fn main() {
             constants.frame_index = frame_index;
 
             imgui_impl.frame(&mut imgui, |ui| {
+                // let mut opened = true;
+                // ui.show_demo_window(&mut opened);
+
                 ui.window("Hello world")
                     .size([300.0, 150.0], imgui::Condition::FirstUseEver)
                     .build(|| {
@@ -263,6 +275,27 @@ fn main() {
                             .speed(0.1).build(&ui, &mut constants.light_radiance) {
                             reset = true;
                         }
+
+                        if imgui::Drag::new("Emissive").range(0., 100.0)
+                            .speed(0.1).build(&ui, &mut constants.emissive_multiplier) {
+                            reset = true;
+                        }
+
+                        let mut index = constants.debug as usize;
+                        let items = [
+                            "Rendered",
+                            "Roughness",
+                            "Metallic",
+                            "Emissive",
+                            "Normals",
+                        ];
+
+                        use std::borrow::Cow;
+                        if ui.combo("Debug view", &mut index, &items, |v| Cow::from(*v)) {
+                            reset = true;
+                            constants.debug = index as u32;
+                        }
+
 
                         let mut pos = constants.camera_position.to_slice();
                         if imgui::Drag::new("Camera position")

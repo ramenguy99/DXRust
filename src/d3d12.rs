@@ -111,6 +111,17 @@ pub struct Context {
 }
 
 impl Context {
+
+    #[allow(unused)]
+    unsafe extern "system" fn message_callback(
+        _category: D3D12_MESSAGE_CATEGORY,
+        _severity: D3D12_MESSAGE_SEVERITY,
+        _id: D3D12_MESSAGE_ID,
+        _pdescription: windows::core::PCSTR,
+        _pcontext: *mut ::core::ffi::c_void) {
+
+    }
+
     pub fn init(window: &Window) -> Option<Self> {
         let mut debug_interface: Option<ID3D12Debug1> = None;
 
@@ -134,12 +145,18 @@ impl Context {
         let device = device?;
 
 
-        let info_queue: ID3D12InfoQueue = device.cast().ok()?;
+        let info_queue: ID3D12InfoQueue = device.cast().unwrap();
         unsafe {
             info_queue.SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR,
                                           true).ok()?;
             info_queue.SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION,
                                           true).ok()?;
+
+            /* Looks like this is supported only on Windows 11
+            let mut cookie: u32 = 0;
+            info_queue.RegisterMessageCallback(Some(Context::message_callback),
+                D3D12_MESSAGE_CALLBACK_FLAG_NONE, null(), &mut cookie).unwrap();
+            */
         }
 
 

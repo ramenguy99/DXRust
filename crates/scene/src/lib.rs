@@ -1,12 +1,12 @@
 use math::{
-    vec::{Vec2, Vec3},
+    vec::{Vec2, Vec3, Vec4},
     mat::Mat4,
 };
 
 pub mod camera;
 
 pub use camera::*;
-use bytemuck::{bytes_of, cast_slice, Pod, Zeroable, pod_read_unaligned};
+use bytemuck::{bytes_of, cast_slice, Pod, pod_read_unaligned};
 
 #[derive(Debug)]
 pub struct Mesh {
@@ -68,10 +68,34 @@ pub struct Image {
 }
 
 
-#[derive(Debug, Pod, Zeroable, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
+pub enum MaterialParameter {
+    None,
+    Texture(u32),
+    Vec2(Vec2),
+    Vec3(Vec3),
+    Vec4(Vec4),
+}
+
+impl Into<u32> for MaterialParameter {
+    fn into(self) -> u32 {
+        match self {
+            MaterialParameter::None => 0,
+            MaterialParameter::Texture(_) => 1,
+            MaterialParameter::Vec2(_)    => 2,
+            MaterialParameter::Vec3(_)    => 3,
+            MaterialParameter::Vec4(_)    => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct Material {
-    pub albedo_texture: u32,
+    pub base_color: MaterialParameter,
+    pub normal:     MaterialParameter,
+    pub specular:   MaterialParameter,
+    pub emissive:   MaterialParameter,
 }
 
 
@@ -97,6 +121,30 @@ impl Serialize for Format {
     fn serialize_buf(&self, buf: &mut Vec<u8>) {
         let v: u32 = (*self).into();
         (&v).serialize_buf(buf);
+    }
+}
+
+impl Serialize for MaterialParameter {
+    fn serialize_buf(&self, buf: &mut Vec<u8>) {
+        let typ: u32 = (*self).into();
+        (&typ).serialize_buf(buf);
+
+        match *self {
+            MaterialParameter::None => {},
+            MaterialParameter::Texture(v) => (&v).serialize_buf(buf),
+            MaterialParameter::Vec2(v)    => (&v).serialize_buf(buf),
+            MaterialParameter::Vec3(v)    => (&v).serialize_buf(buf),
+            MaterialParameter::Vec4(v)    => (&v).serialize_buf(buf),
+        }
+    }
+}
+
+impl Serialize for Material {
+    fn serialize_buf(&self, buf: &mut Vec<u8>) {
+        self.base_color.serialize_buf(buf);
+        self.normal.serialize_buf(buf);
+        self.specular.serialize_buf(buf);
+        self.emissive.serialize_buf(buf);
     }
 }
 
@@ -176,6 +224,35 @@ impl<T: Pod> Deserialize for &T {
     }
 }
 
+impl Deserialize for MaterialParameter {
+    type Item = MaterialParameter;
+
+    fn deserialize(buf: &mut &[u8]) -> Self::Item {
+        let typ = <&u32>::deserialize(buf);
+        match typ {
+            0 => MaterialParameter::None,
+            1 => MaterialParameter::Texture(<&u32>::deserialize(buf)),
+            2 => MaterialParameter::Vec2(<&Vec2>::deserialize(buf)),
+            3 => MaterialParameter::Vec3(<&Vec3>::deserialize(buf)),
+            4 => MaterialParameter::Vec4(<&Vec4>::deserialize(buf)),
+            _ => panic!(),
+        }
+    }
+}
+
+impl Deserialize for Material {
+    type Item = Material;
+
+    fn deserialize(buf: &mut &[u8]) -> Self::Item {
+        Material {
+            base_color: MaterialParameter::deserialize(buf),
+            normal:     MaterialParameter::deserialize(buf),
+            specular:   MaterialParameter::deserialize(buf),
+            emissive:   MaterialParameter::deserialize(buf),
+        }
+    }
+}
+
 impl Deserialize for Mesh {
     type Item = Self;
 
@@ -187,7 +264,7 @@ impl Deserialize for Mesh {
             indices: Vec::<u32>::deserialize(buf),
 
             transform: <&Mat4>::deserialize(buf),
-            material: <&Material>::deserialize(buf),
+            material: Material::deserialize(buf),
         }
     }
 }
