@@ -31,7 +31,8 @@ fn main() {
     //     std::process::exit(1);
     // });
 
-    let path = std::env::args().nth(1).unwrap_or(String::from("crates/asset/bistro.lz4"));
+    let path = std::env::args().nth(1).unwrap_or(
+        String::from("crates/asset/bistro.lz4"));
 
     let mut scene = asset::load_scene_from_file(&Path::new(&path))
         .expect("Failed to open asset file");
@@ -66,12 +67,13 @@ fn main() {
     let raster = Box::new(Raster::init(&window, &d3d12, &scene));
     let ray = Box::new(Ray::init(&window, &d3d12, &scene));
 
-    assert!(d3d12.csu_descriptor_heap.offset() == 7);
+    assert!(d3d12.csu_descriptor_heap.offset() == 10);
     let mut textures: Vec<ID3D12Resource> = Vec::new();
     for img in &scene.images {
         let descriptor = d3d12.alloc_csu_descriptor().unwrap();
         let format = match img.format {
             scene::Format::RGBA8 => d3d12::DXGI_FORMAT_R8G8B8A8_UNORM,
+            scene::Format::SRGBA8 => d3d12::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
         };
         let texture = d3d12.upload_tex2d_sync(&img.data, img.width, img.height,
             format, d3d12::D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
@@ -86,28 +88,33 @@ fn main() {
 
     let mut scene: &mut Box<dyn Pipeline> = &mut ray_scene;
 
-    let camera_pos = Vec3::new(-15., -3.0, 4.);
+    let camera_pos = Vec3::new(-21., -1.0, 5.5);
     let mut camera = Camera::new(
         camera_pos,
         Vec3::new(0., 0., 0.),
         Vec3::new(0., 0., 1.),
-        0., 0., 0., 0., 50., 1.
+        0., 0., 0., 0., 5., 1.
     );
 
 
     let mut constants = SceneConstants {
-        camera_position: Vec3::new(-15., -3.0, 4.),
-        camera_direction: Vec3::new(0.0, -1.0, 0.0),
-        light_direction: -Vec3::new(-3., -1.0, 10.).normalized(),
+        camera_position: camera_pos,
+        camera_direction: camera.forward,
+        light_direction: Vec3::new(0.3, 0.3, -1.0).normalized(), //Vec3::new(-0.496, 0.694, -0.522).normalized(),
         light_radiance: 5.0,
         diffuse_color: Vec3::new(0., 1., 0.),
-        film_dist: 1.0,
-        emissive_multiplier: 1.0,
+        film_dist: 0.7,
+        emissive_multiplier: 0.0,
         ..Default::default()
     };
+    const NIGHT: bool = false;
+    if NIGHT {
+        constants.light_radiance = 0.0;
+        constants.emissive_multiplier = 100.0;
+    }
 
     let mut timestamp = Instant::now();
-    let mut frame_times = [0.0f64; 128];
+    let mut frame_times = [-1.0f64; 64];
     let mut frame_time_index: usize = 0;
     let mut frame_index: u32 = 0;
 
@@ -123,8 +130,8 @@ fn main() {
         timestamp = now;
 
         frame_times[frame_time_index] = dt;
-        let avg_frame_time = frame_times.iter().fold(0.0, |s, x| s + x) /
-            frame_times.len() as f64;
+        let avg_frame_time = frame_times.iter().fold(0.0, |s, x| if *x > 0.0 { s + x } else { s }) /
+            frame_times.iter().fold(0, |s, x| s + ((*x > 0.0) as u32)) as f64;
         frame_time_index = (frame_time_index + 1) % frame_times.len();
         let dt = dt as f32;
 
@@ -135,7 +142,7 @@ fn main() {
             use win32::{Event::*, MouseButton};
             match event {
                 Quit => break 'main,
-                KeyPress(Some(i @ ('1' | '2' | '3' | '4' | '5'))) => {
+                KeyPress(Some(i @ ('1' | '2' | '3' | '4' | '5' | '6' ))) => {
                     let i = i.to_digit(10).unwrap() - 1;
                     constants.debug = i;
                     reset = true;
@@ -244,7 +251,8 @@ fn main() {
                 reset = true;
             }
 
-            camera.aspect_ratio = window.height() as f32 / window.width() as f32;
+            camera.aspect_ratio =
+                window.height() as f32 / window.width() as f32;
             camera.near = 0.1;
             camera.far = 1000.0;
             camera.fov = 2. * (1. / (constants.film_dist * 2.)).atan();
@@ -261,7 +269,8 @@ fn main() {
                 // ui.show_demo_window(&mut opened);
 
                 ui.window("Hello world")
-                    .size([300.0, 150.0], imgui::Condition::FirstUseEver)
+                    .position([20., 20.], imgui::Condition::FirstUseEver)
+                    .size([380., 250.], imgui::Condition::FirstUseEver)
                     .build(|| {
                         ui.text(format!("{:.3}ms ({:.3}fps)",
                                         avg_frame_time * 1000.0,
@@ -271,13 +280,25 @@ fn main() {
                             reset = true;
                         }
 
-                        if imgui::Drag::new("Radiance").range(0., 100.0)
-                            .speed(0.1).build(&ui, &mut constants.light_radiance) {
+                        if imgui::Drag::new("Radiance")
+                            .range(0., 100.0)
+                            .speed(0.1)
+                            .build(&ui, &mut constants.light_radiance) {
                             reset = true;
                         }
 
-                        if imgui::Drag::new("Emissive").range(0., 100.0)
-                            .speed(0.1).build(&ui, &mut constants.emissive_multiplier) {
+                        let mut dir = constants.light_direction.to_slice();
+                        if imgui::Drag::new("Light direction")
+                            .speed(0.01)
+                            .build_array(&ui, &mut dir) {
+                            reset = true;
+                            constants.light_direction = Vec3::from_slice(&dir).normalized();
+                        }
+
+                        if imgui::Drag::new("Emissive")
+                            .range(0., 1000.0)
+                            .speed(0.1)
+                            .build(&ui, &mut constants.emissive_multiplier) {
                             reset = true;
                         }
 
@@ -288,10 +309,13 @@ fn main() {
                             "Metallic",
                             "Emissive",
                             "Normals",
+                            "Debug",
                         ];
 
                         use std::borrow::Cow;
-                        if ui.combo("Debug view", &mut index, &items, |v| Cow::from(*v)) {
+                        if ui.combo("Debug view", &mut index,
+                            &items, |v| Cow::from(*v)) {
+
                             reset = true;
                             constants.debug = index as u32;
                         }

@@ -1,11 +1,5 @@
-#include "imgui.root"
+#include "imgui.common.hlsl"
 
-struct PS_INPUT
-{
-    float4 pos : SV_POSITION;
-    float4 col : COLOR0;
-    float2 uv  : TEXCOORD0;
-};
 
 SamplerState sampler0 : register(s0);
 Texture2D texture0 : register(t0);

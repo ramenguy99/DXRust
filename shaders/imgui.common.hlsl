@@ -12,3 +12,17 @@
         "borderColor = STATIC_BORDER_COLOR_TRANSPARENT_BLACK," \
         "maxLOD = 0," \
         "visibility = SHADER_VISIBILITY_PIXEL)"
+
+struct VS_INPUT
+{
+    float2 pos : POSITION;
+    float4 col : COLOR0;
+    float2 uv  : TEXCOORD0;
+};
+
+struct PS_INPUT
+{
+    float4 pos : SV_POSITION;
+    float4 col : COLOR0;
+    float2 uv  : TEXCOORD0;
+};

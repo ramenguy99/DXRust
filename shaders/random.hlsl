@@ -1,3 +1,5 @@
+#include "utils.hlsl"
+
 //RNG from code by Moroz Mykhailo (https://www.shadertoy.com/view/wltcRS)
 
 //internal RNG state
@@ -33,9 +35,7 @@ vec4 rand4(inout uvec4 seed)
     return vec4(seed)/float(0xffffffffu);
 }
 
-vec3 sampleUniformSphere(inout uvec4 seed) {
-    vec2 u = rand2(seed);
-
+vec3 sampleUniformSphere(vec2 u) {
     float z = 2.0 * u.x - 1.0;
     float r = sqrt(1.0 - z * z);
     float phi = (2.0 * PI) * u.y;
@@ -49,24 +49,22 @@ vec3 pdfUniformSphere() {
 }
 
 
-vec2 sampleUniformDisk(inout uvec4 seed) {
-    vec2 u = rand2(seed);
-
+vec2 sampleUniformDisk(vec2 u) {
     float r = sqrt(u.x);
     float theta = (2.0f * PI) * u.y;
     return vec2(r * cos(theta), r * sin(theta));
 }
 
-vec3 sampleUniformHemisphere(inout uvec4 seed) {
-    vec3 d = sampleUniformSphere(seed);
+vec3 sampleUniformHemisphere(vec2 u) {
+    vec3 d = sampleUniformSphere(u);
     if(d.z < 0.0) {
         d.z = -d.z;
     }
     return d;
 }
 
-vec3 sampleCosineWeightedHemisphere(inout uvec4 seed) {
-    vec2 p = sampleUniformDisk(seed);
+vec3 sampleCosineWeightedHemisphere(vec2 u) {
+    vec2 p = sampleUniformDisk(u);
     float z = sqrt(1 - p.x * p.x - p.y * p.y);
     return vec3(p.x, p.y, z);
 }
@@ -80,10 +78,34 @@ vec3 pdfUniformHemisphere() {
 }
 
 
-vec3 sampleUniformHemisphereN(inout uvec4 seed, vec3 n) {
-    vec3 d = sampleUniformSphere(seed);
+vec3 sampleUniformHemisphereN(inout vec2 u, vec3 n) {
+    vec3 d = sampleUniformSphere(u);
     if(dot(d, n) < 0.0f) {
         d = -d;
     }
     return d;
+}
+
+float evalGTR2(float cos_theta, float alpha) {
+    float alpha2 = square(alpha);
+    return alpha2 / (PI * square((1 + (alpha2 - 1) * square(cos_theta))));
+}
+
+vec3 sampleGTR2(vec2 u, float alpha) {
+    float alpha2 = square(alpha);
+    float cos_theta2 = (1 - u.x) / (1 + (alpha2 - 1) * u.x);
+
+    float cos_theta = sqrt(cos_theta2);
+    float sin_theta = sqrt(1.0f - cos_theta2);
+
+    float phi = 2.0f * PI * u.y;
+
+    float x = sin_theta * cos(phi);
+    float y = sin_theta * sin(phi);
+    float z = cos_theta;
+    return vec3(x, y, z);
+}
+
+float pdfGTR2(vec3 m, float alpha) {
+    return evalGTR2(m.z, alpha) * m.z;
 }

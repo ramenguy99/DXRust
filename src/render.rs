@@ -1,40 +1,17 @@
 use core::ptr::{null, null_mut};
 use core::mem::{size_of, size_of_val};
 
+use bytemuck::cast_slice;
 use math::vec::{Vec2, Vec3, Vec4};
-use math::mat::{Mat4};
 
-use scene::{Mesh, Scene, MaterialParameter};
+use scene::{Mesh, Scene};
 
-use crate::d3d12;
-use crate::shaders;
+use crate::d3d12::{self, ResourceDesc, ResourceBarrier};
+use crate::shaders::{self, RayMeshInstance, RasterMeshInstance};
+pub use crate::shaders::Constants as SceneConstants;
 use crate::win32;
 
 const MAX_SAMPLES: u32 = 1024;
-
-#[derive(Default, Clone, Copy)]
-#[repr(C)]
-pub struct SceneConstants {
-    pub camera_position: Vec3,
-    pub _padding0: f32,
-
-    pub camera_direction: Vec3,
-    pub _padding1: f32,
-
-    pub light_direction: Vec3,
-    pub light_radiance: f32,
-
-    pub diffuse_color: Vec3,
-    pub film_dist: f32,
-
-    pub projection: Mat4,
-    pub view: Mat4,
-
-    pub frame_index: u32,
-    pub samples: u32,
-    pub emissive_multiplier: f32,
-    pub debug: u32,
-}
 
 pub trait Pipeline {
     fn resize(&mut self, d3d12: &d3d12::Context, width: u32, height:u32);
@@ -70,12 +47,6 @@ pub struct Raster {
     mesh_constants: d3d12::ID3D12Resource,
 
     constant_buffer: d3d12::PerFrameConstantBuffer,
-}
-
-#[allow(dead_code)]
-struct MeshConstants {
-    transform: Mat4,
-    albedo_index: u32,
 }
 
 #[repr(C)]
@@ -118,7 +89,7 @@ impl Raster {
         let mut normals_buf: Vec<Vec3> = Vec::new();
         let mut uvs_buf: Vec<Vec2> = Vec::new();
         let mut indices_buf: Vec<u32> = Vec::new();
-        let mut mesh_constants_buf: Vec<MeshConstants> = Vec::new();
+        let mut mesh_constants_buf: Vec<RasterMeshInstance> = Vec::new();
 
         let mut current_vertex: u32 = 0;
         let mut current_index:  u32 = 0;
@@ -128,13 +99,35 @@ impl Raster {
             normals_buf  .extend_from_slice(&m.normals);
             uvs_buf      .extend_from_slice(&m.uvs);
             indices_buf  .extend_from_slice(&m.indices);
-            mesh_constants_buf.push(MeshConstants {
+
+            let mut mesh_instance = RasterMeshInstance {
                 transform: m.transform,
-                albedo_index: match m.material.base_color {
-                    MaterialParameter::Texture(v) => v,
-                    _ => u32::MAX,
-                }
-            });
+                ..Default::default()
+            };
+
+            macro_rules! material {
+                ($m: ident, $index: ident, $value: ident, $default: expr) => {
+                    match m.material.$m {
+                        scene::MaterialParameter::Texture(v) => {
+                            mesh_instance.$index = v;
+                        },
+                        scene::MaterialParameter::Vec4(v) => {
+                            mesh_instance.$index  = u32::MAX;
+                            mesh_instance.$value = v;
+                        }
+                        _ => {
+                            mesh_instance.$index  = u32::MAX;
+                            mesh_instance.$value = $default;
+                        }
+                    };
+                };
+            }
+
+            material!(base_color, albedo_index,   albedo_value,   Vec4::new(1.0, 0.0, 1.0, 1.0));
+            material!(specular,   specular_index, specular_value, Vec4::new(0.0, 1.0, 0.0, 0.0));
+            material!(emissive,   emissive_index, emissive_value, Vec4::new(0.0, 0.0, 0.0, 0.0));
+
+            mesh_constants_buf.push(mesh_instance);
 
             commands_buf.push(DrawArgs {
                 index: i as u32,
@@ -183,7 +176,7 @@ impl Raster {
         let mesh_constants = d3d12.upload_buffer_sync( unsafe {
             core::slice::from_raw_parts(mesh_constants_buf.as_ptr() as *const u8,
                                         mesh_constants_buf.len() *
-                                        size_of::<MeshConstants>())
+                                        size_of::<RasterMeshInstance>())
             }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload mesh constants");
 
@@ -191,7 +184,7 @@ impl Raster {
             .expect("Failed to alloc mesh constants descriptor");
         d3d12.create_shader_resource_view_structured_buffer(&mesh_constants,
                                             0, mesh_constants_buf.len() as u32,
-                                            size_of::<MeshConstants>() as u32,
+                                            size_of::<RasterMeshInstance>() as u32,
                                             mesh_desc);
 
 
@@ -409,49 +402,40 @@ impl Pipeline for Raster {
 }
 
 #[allow(dead_code)]
-#[derive(Default)]
-#[repr(C)]
-struct RayMeshInstance {
-    vertex_offset: u32,
-    index_offset: u32,
-    albedo_index: u32,
-    normal_index: u32,
-
-    specular_index: u32,
-    emissive_index: u32,
-
-    albedo_value: Vec4,
-    specular_value: Vec4,
-    emissive_value: Vec4,
-}
-
-#[allow(dead_code)]
 pub struct Ray {
-    rs:                         d3d12::ID3D12RootSignature,
-    state_object:               d3d12::ID3D12StateObject,
-    width:                      u32,
-    height:                     u32,
-    raygen_resource:            d3d12::ID3D12Resource,
-    raygen_table:               d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE,
-    miss_resource:              d3d12::ID3D12Resource,
-    miss_table:                 d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
-    hit_resource:               d3d12::ID3D12Resource,
-    hit_table:                  d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
-    tlas:                       d3d12::ID3D12Resource,
-    tlas_desc_handle:           d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
-    blas:                       d3d12::ID3D12Resource,
-    instances:                  d3d12::ID3D12Resource,
-    normals:                    d3d12::ID3D12Resource,
-    normals_desc_handle:        d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
-    uvs:                        d3d12::ID3D12Resource,
-    uvs_desc_handle:            d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
-    indices:                    d3d12::ID3D12Resource,
-    indices_desc_handle:        d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
-    uav:                        d3d12::ID3D12Resource,
-    uav_desc_handle:            d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
-    constant_buffer:            d3d12::PerFrameConstantBuffer,
-    mesh_instances:             d3d12::ID3D12Resource,
-    mesh_instances_desc_handle: d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    rs:                             d3d12::ID3D12RootSignature,
+    state_object:                   d3d12::ID3D12StateObject,
+    width:                          u32,
+    height:                         u32,
+    raygen_resource:                d3d12::ID3D12Resource,
+    raygen_table:                   d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE,
+    miss_resource:                  d3d12::ID3D12Resource,
+    miss_table:                     d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
+    hit_resource:                   d3d12::ID3D12Resource,
+    hit_table:                      d3d12::D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
+    tlas:                           d3d12::ID3D12Resource,
+    tlas_desc_handle:               d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    blas:                           d3d12::ID3D12Resource,
+    instances:                      d3d12::ID3D12Resource,
+    normals:                        d3d12::ID3D12Resource,
+    normals_desc_handle:            d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    tangents:                       d3d12::ID3D12Resource,
+    tangents_desc_handle:           d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    uvs:                            d3d12::ID3D12Resource,
+    uvs_desc_handle:                d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    indices:                        d3d12::ID3D12Resource,
+    indices_desc_handle:            d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    uav:                            d3d12::ID3D12Resource,
+    uav_desc_handle:                d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    constant_buffer:                d3d12::PerFrameConstantBuffer,
+    mesh_instances:                 d3d12::ID3D12Resource,
+    mesh_instances_desc_handle:     d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+
+    postprocess_rs:                 d3d12::ID3D12RootSignature,
+    postprocess_pso:                d3d12::ID3D12PipelineState,
+    postprocess_buffer:             d3d12::ID3D12Resource,
+    postprocess_input_desc_handle:  d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    postprocess_output_desc_handle: d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
 
     samples: u32,
     max_samples: u32,
@@ -467,7 +451,7 @@ impl Ray {
             .expect("Failed to create state object");
 
         let uav = d3d12.create_resource(&d3d12::ResourceDesc::uav2d(
-                d3d12::DXGI_FORMAT_R8G8B8A8_UNORM,
+                d3d12::DXGI_FORMAT_R32G32B32A32_FLOAT,
                 window.width(), window.height()),
                 d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 d3d12::D3D12_HEAP_TYPE_DEFAULT)
@@ -526,6 +510,7 @@ impl Ray {
         // Acceleration structures
         let mut positions_buf: Vec<Vec3> = Vec::new();
         let mut normals_buf: Vec<Vec3> = Vec::new();
+        let mut tangents_buf: Vec<Vec3> = Vec::new();
         let mut uvs_buf: Vec<Vec2> = Vec::new();
         let mut indices_buf: Vec<u32> = Vec::new();
         let mut mesh_instances_buf: Vec<RayMeshInstance> = Vec::new();
@@ -548,6 +533,7 @@ impl Ray {
         for (i, m) in scene.meshes.iter().enumerate() {
             positions_buf.extend_from_slice(&m.positions);
             normals_buf  .extend_from_slice(&m.normals  );
+            tangents_buf .extend_from_slice(&m.tangents );
             uvs_buf      .extend_from_slice(&m.uvs      );
             indices_buf  .extend_from_slice(&m.indices  );
 
@@ -578,6 +564,11 @@ impl Ray {
             material!(base_color, albedo_index,   albedo_value,   Vec4::new(1.0, 0.0, 1.0, 1.0));
             material!(specular,   specular_index, specular_value, Vec4::new(0.0, 1.0, 0.0, 0.0));
             material!(emissive,   emissive_index, emissive_value, Vec4::new(0.0, 0.0, 0.0, 0.0));
+            if let scene::MaterialParameter::Texture(v) = m.material.normal {
+                mesh_instance.normal_index = v;
+            } else {
+                mesh_instance.normal_index = u32::MAX;
+            }
 
             mesh_instances_buf.push(mesh_instance);
 
@@ -631,40 +622,34 @@ impl Ray {
         assert!(current_vertex == positions_buf.len() as u32);
         assert!(current_index == indices_buf.len() as u32);
 
-        let positions = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(positions_buf.as_ptr() as *const u8,
-                                        positions_buf.len() * size_of::<Vec3>())
-            }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+        let positions = d3d12.upload_buffer_sync(cast_slice(&positions_buf),
+            d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload positions");
 
-        let normals = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(normals_buf.as_ptr() as *const u8,
-                                        normals_buf.len() * size_of::<Vec3>())
-            }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+        let normals = d3d12.upload_buffer_sync(cast_slice(&normals_buf),
+            d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload normals");
 
-        let uvs = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(uvs_buf.as_ptr() as *const u8,
-                                        uvs_buf.len() * size_of::<Vec2>())
-            }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+        let tangents = d3d12.upload_buffer_sync(cast_slice(&tangents_buf),
+            d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+            .expect("Failed to upload tangents");
+
+        let uvs = d3d12.upload_buffer_sync(cast_slice(&uvs_buf),
+            d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload uvs");
 
-        let indices = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(indices_buf.as_ptr() as *const u8,
-                                        indices_buf.len() * size_of::<u32>())
-            }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+        let indices = d3d12.upload_buffer_sync(cast_slice(&indices_buf),
+            d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload indices");
 
-        let mesh_instances = d3d12.upload_buffer_sync( unsafe {
-            core::slice::from_raw_parts(mesh_instances_buf.as_ptr() as *const u8,
-                                        mesh_instances_buf.len() *
-                                        size_of::<RayMeshInstance>())
-            }, d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+        let mesh_instances = d3d12.upload_buffer_sync(
+            cast_slice(&mesh_instances_buf),
+            d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
             .expect("Failed to upload mesh instances");
 
         let blas_scratch = d3d12.create_resource(
             &d3d12::ResourceDesc::uav_buffer(scratch_size as usize),
-            d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            d3d12::D3D12_RESOURCE_STATE_COMMON,
             d3d12::D3D12_HEAP_TYPE_DEFAULT).expect("Failed to alloc blas scratch");
 
         let blas = d3d12.create_resource(
@@ -741,7 +726,7 @@ impl Ray {
         let tlas_scratch = d3d12.create_resource(
             &d3d12::ResourceDesc::uav_buffer(info.ScratchDataSizeInBytes
                                       as usize),
-            d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            d3d12::D3D12_RESOURCE_STATE_COMMON,
             d3d12::D3D12_HEAP_TYPE_DEFAULT).expect("Failed to alloc tlas scratch");
 
         let tlas = d3d12.create_resource(
@@ -832,6 +817,14 @@ impl Ray {
                                                  0, normals_buf.len() as u32,
                                                  normals_desc_handle);
 
+        let tangents_desc_handle = d3d12.alloc_csu_descriptor()
+            .expect("Failed to alloc csu descriptor for tangents");
+
+        d3d12.create_shader_resource_view_buffer(&tangents,
+                                                 d3d12::DXGI_FORMAT_R32G32B32_FLOAT,
+                                                 0, tangents_buf.len() as u32,
+                                                 tangents_desc_handle);
+
         let uvs_desc_handle = d3d12.alloc_csu_descriptor()
         .expect("Failed to alloc csu descriptor for uvs");
 
@@ -850,6 +843,38 @@ impl Ray {
         let constant_buffer = d3d12.create_per_frame_constant_buffer(
             size_of::<SceneConstants>())
             .expect("Failed to alloc per frame constant buffers");
+
+        // Post processing
+        let postprocess_rs = d3d12.create_root_signature_from_shader(
+            &shaders::POSTPROCESS_CS)
+            .expect("Failed to create root signature");
+
+        let postprocess_pso =
+            d3d12.create_compute_pipelinestate(&shaders::POSTPROCESS_CS, &postprocess_rs)
+                .expect("Failed to initialize pipeline state");
+
+        let postprocess_buffer = d3d12.create_resource(
+            &ResourceDesc::uav2d(
+                d3d12::DXGI_FORMAT_R8G8B8A8_UNORM,
+                window.width(),
+            window.height()),
+            d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            d3d12::D3D12_HEAP_TYPE_DEFAULT)
+            .expect("Failed to create postprocess buffer");
+
+        let postprocess_input_desc_handle = d3d12.alloc_csu_descriptor()
+        .expect("Failed to alloc csu descriptor for postprocess buffer");
+
+        d3d12.create_shader_resource_view_tex2d(
+            &uav, d3d12::DXGI_FORMAT_R32G32B32A32_FLOAT,
+            postprocess_input_desc_handle);
+
+        let postprocess_output_desc_handle = d3d12.alloc_csu_descriptor()
+        .expect("Failed to alloc csu descriptor for postprocess buffer");
+
+        d3d12.create_unordered_access_view(
+            d3d12::D3D12_UAV_DIMENSION_TEXTURE2D,
+            &postprocess_buffer, postprocess_output_desc_handle);
 
         Self {
             width: window.width(),
@@ -870,6 +895,8 @@ impl Ray {
             instances,
             normals,
             normals_desc_handle,
+            tangents,
+            tangents_desc_handle,
             uvs,
             uvs_desc_handle,
             indices,
@@ -877,6 +904,12 @@ impl Ray {
             constant_buffer,
             mesh_instances,
             mesh_instances_desc_handle,
+
+            postprocess_rs,
+            postprocess_pso,
+            postprocess_buffer,
+            postprocess_input_desc_handle,
+            postprocess_output_desc_handle,
 
             samples: 0,
             max_samples: MAX_SAMPLES,
@@ -914,31 +947,12 @@ impl Pipeline for Ray {
         let command_list = d3d12.create_graphics_command_list(frame)
             .expect("Failed to create command list");
 
-        let before_barriers = [
-            d3d12::ResourceBarrier::transition(
-                &self.uav,
-                d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                d3d12::D3D12_RESOURCE_STATE_COPY_SOURCE),
-
-                d3d12::ResourceBarrier::transition(
-                    frame.render_target_resource.as_ref().unwrap(),
-                    d3d12::D3D12_RESOURCE_STATE_PRESENT,
-                    d3d12::D3D12_RESOURCE_STATE_COPY_DEST),
-        ];
-
-        let after_barriers = [
-            d3d12::ResourceBarrier::transition(
-                &self.uav,
-                d3d12::D3D12_RESOURCE_STATE_COPY_SOURCE,
-                d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-
-                d3d12::ResourceBarrier::transition(
-                    frame.render_target_resource.as_ref().unwrap(),
-                    d3d12::D3D12_RESOURCE_STATE_COPY_DEST,
-                    d3d12::D3D12_RESOURCE_STATE_RENDER_TARGET),
-        ];
-
         unsafe {
+            command_list.SetDescriptorHeaps(
+                &[
+                    Some(d3d12.csu_descriptor_heap.heap.clone()),
+                ]);
+
             if dispatch {
                 let ray_desc = d3d12::D3D12_DISPATCH_RAYS_DESC {
                     Width: self.width,
@@ -958,10 +972,6 @@ impl Pipeline for Ray {
                     .expect("Failed to write constants");
 
                 command_list.SetComputeRootSignature(&self.rs);
-                command_list.SetDescriptorHeaps(
-                    &[
-                        Some(d3d12.csu_descriptor_heap.heap.clone()),
-                    ]);
                 command_list.SetComputeRootDescriptorTable(
                     0, d3d12.csu_descriptor_heap.heap
                     .GetGPUDescriptorHandleForHeapStart());
@@ -972,15 +982,61 @@ impl Pipeline for Ray {
                 command_list.DispatchRays(&ray_desc);
             }
 
+            let before_barriers = [
+                ResourceBarrier::transition(&self.uav,
+                    d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    d3d12::D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+            ];
             command_list.ResourceBarrier(before_barriers.as_slice());
+
+            // Postprocess compute shader
+            command_list.SetComputeRootSignature(&self.postprocess_rs);
+            command_list.SetComputeRootDescriptorTable(
+                0, d3d12.csu_descriptor_heap.heap
+                .GetGPUDescriptorHandleForHeapStart());
+            command_list.SetComputeRoot32BitConstant(1, self.samples, 0);
+            command_list.SetComputeRoot32BitConstant(1, constants.debug, 1);
+            command_list.SetPipelineState(&self.postprocess_pso);
+            command_list.Dispatch(self.width, self.height, 1);
+
+            let mid_barriers = [
+                d3d12::ResourceBarrier::transition(
+                    &self.postprocess_buffer,
+                    d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    d3d12::D3D12_RESOURCE_STATE_COPY_SOURCE),
+
+                d3d12::ResourceBarrier::transition(
+                    frame.render_target_resource.as_ref().unwrap(),
+                    d3d12::D3D12_RESOURCE_STATE_PRESENT,
+                    d3d12::D3D12_RESOURCE_STATE_COPY_DEST),
+            ];
+            command_list.ResourceBarrier(mid_barriers.as_slice());
+
             command_list.CopyResource(frame.render_target_resource.as_ref()
                                       .unwrap(),
-                                      &self.uav);
+                                      &self.postprocess_buffer);
+
+            let after_barriers = [
+                d3d12::ResourceBarrier::transition(
+                    &self.postprocess_buffer,
+                    d3d12::D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+
+                d3d12::ResourceBarrier::transition(
+                    frame.render_target_resource.as_ref().unwrap(),
+                    d3d12::D3D12_RESOURCE_STATE_COPY_DEST,
+                    d3d12::D3D12_RESOURCE_STATE_RENDER_TARGET),
+
+                ResourceBarrier::transition(&self.uav,
+                    d3d12::D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+            ];
             command_list.ResourceBarrier(after_barriers.as_slice());
 
-            command_list.Close().expect("Failed to closa command list");
+            command_list.Close().expect("Failed to close command list");
 
             d3d12::drop_barriers(before_barriers);
+            d3d12::drop_barriers(mid_barriers);
             d3d12::drop_barriers(after_barriers);
         }
 

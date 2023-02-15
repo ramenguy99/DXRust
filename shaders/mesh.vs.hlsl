@@ -1,55 +1,16 @@
-#include "mesh.root"
-#include "defines.hlsl"
-
-struct Constants {
-    vec3 camera_position;
-
-    vec3 camera_direction;
-
-    vec3 light_position;
-
-    vec3 diffuse_color;
-    float film_dist;
-
-    mat4 projection;
-    mat4 view;
-};
-
-struct DrawConstants {
-    uint index;
-};
-
-struct MeshConstants {
-    mat4 transform;
-    u32 albedo_index;
-};
+#include "types.hlsl"
+#include "mesh.common.hlsl"
 
 ConstantBuffer<Constants> g_constants: register(b0);
 ConstantBuffer<DrawConstants> g_draw_constants: register(b1);
 
-StructuredBuffer<MeshConstants> g_mesh_constants: register(t0, space0);
-
-struct VS_INPUT
-{
-    float3 pos : POSITION;
-    float3 normal : NORMAL;
-    float2 uv: TEXCOORD;
-};
-
-struct PS_INPUT
-{
-    float4 pos: SV_POSITION;
-
-    float3 world_pos: POSITION;
-    float3 normal: NORMAL;
-    float2 uv: TEXCOORD;
-};
+StructuredBuffer<RasterMeshInstance> g_mesh_instances: register(t0, space0);
 
 [RootSignature(MyRS1)]
 PS_INPUT main(VS_INPUT input)
 {
 #if 1
-    mat4 model = g_mesh_constants[g_draw_constants.index].transform;
+    mat4 model = g_mesh_instances[g_draw_constants.index].transform;
     vec4 world_pos = mul(model, float4(input.pos, 1.0));
 
     PS_INPUT output;

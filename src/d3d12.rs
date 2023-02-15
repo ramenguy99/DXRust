@@ -571,6 +571,8 @@ impl Context {
     }
 
     pub fn wait_idle(&self) -> Option<()> {
+        // TODO: double check this is correct with the new wait logic.
+        // we should probably also set self.fence_value here
         let value = unsafe {
             let value = self.fence.GetCompletedValue() + 1;
             self.command_queue.Signal(&self.fence, value).ok()?;
@@ -579,7 +581,7 @@ impl Context {
             value
         };
 
-        // Rest all frame fence values
+        // Reset all frame fence values
         for f in self.frames.iter() {
             f.fence_value.set(value);
         }
@@ -698,8 +700,8 @@ impl Context {
 
         let dest_buffer =
             self.create_resource(&ResourceDesc::buffer(data.len()),
-                                 D3D12_RESOURCE_STATE_COPY_DEST,
-                                 D3D12_HEAP_TYPE_DEFAULT)?;
+                                D3D12_RESOURCE_STATE_COMMON,
+                                D3D12_HEAP_TYPE_DEFAULT)?;
         unsafe {
             self.sync_command_list.CopyBufferRegion(&dest_buffer, 0,
                                                     &upload_buffer.res, 0,
@@ -791,7 +793,7 @@ impl Context {
             scratch: self.create_resource(
                          &ResourceDesc::uav_buffer(
                              info.ScratchDataSizeInBytes as usize),
-                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                         D3D12_RESOURCE_STATE_COMMON,
                          D3D12_HEAP_TYPE_DEFAULT)?,
 
             acceleration_structure: self.create_resource(
@@ -852,7 +854,7 @@ impl Context {
             scratch: self.create_resource(
                          &ResourceDesc::uav_buffer(info.ScratchDataSizeInBytes
                                                    as usize),
-                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                         D3D12_RESOURCE_STATE_COMMON,
                          D3D12_HEAP_TYPE_DEFAULT)?,
 
             acceleration_structure: self.create_resource(

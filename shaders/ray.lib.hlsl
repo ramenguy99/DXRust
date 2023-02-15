@@ -1,9 +1,23 @@
 #include "defines.hlsl"
 #include "random.hlsl"
+#include "types.hlsl"
+#include "utils.hlsl"
+#include "principled_brdf.hlsl"
 
 GlobalRootSignature MyGlobalRootSignature =
 {
-    "DescriptorTable(UAV(u0, offset=1), SRV(t0), SRV(t1), SRV(t2), SRV(t3), SRV(t4), SRV(t0, numDescriptors=unbounded, space=1, flags=DESCRIPTORS_VOLATILE))," // output, as, indices, normals, uvs, instances data
+    "DescriptorTable("
+        "UAV(u0, offset=1)," // 1 - output
+        "SRV(t0), "          // 2 - acceleration structure
+        "SRV(t1), "          // 3 - index buffer
+        "SRV(t2), "          // 4 - normals
+        "SRV(t3), "          // 5 - tangents
+        "SRV(t4), "          // 6 - uvs
+        "SRV(t5), "          // 7 - instances data
+                             // 8 - postprocess input
+                             // 9 - postporcess output
+        "SRV(t6, offset=10, numDescriptors=unbounded, flags=DESCRIPTORS_VOLATILE)" // 10 - Textures
+    "),"
     "CBV(b0)," // constants
     "StaticSampler(s0, filter = FILTER_MIN_MAG_MIP_LINEAR),"
 };
@@ -32,45 +46,13 @@ RaytracingAccelerationStructure scene : register(t0);
 // Geometry data for first instance
 Buffer<uint> index_buffer: register(t1);
 Buffer<vec3> normals_buffer: register(t2);
-Buffer<vec2> uvs_buffer: register(t3);
+Buffer<vec3> tangents_buffer: register(t3);
+Buffer<vec2> uvs_buffer: register(t4);
 
-struct MeshInstance {
-    uint vertex_offset;
-    uint index_offset;
-
-    uint albedo_index;
-    uint normal_index;
-    uint specular_index;
-    uint emissive_index;
-
-    vec4 albedo_value;
-    vec4 specular_value;
-    vec4 emissive_value;
-};
-
-StructuredBuffer<MeshInstance> instances_buffer: register(t4);
-Texture2D<vec4> textures[]: register(t0, space1);
+StructuredBuffer<RayMeshInstance> instances_buffer: register(t5);
+Texture2D<vec4> textures[]: register(t6);
 SamplerState linear_sampler: register(s0);
 
-struct Constants {
-    vec3 camera_position;
-
-    vec3 camera_direction;
-
-    vec3 light_direction;
-    float light_radiance;
-
-    vec3 diffuse_color;
-    float film_dist;
-
-    mat4 projection;
-    mat4 view;
-
-    u32 frame_index;
-    u32 samples;
-    float emissive_multiplier;
-    u32 debug;
-};
 
 ConstantBuffer<Constants> g_constants: register(b0);
 
@@ -113,7 +95,6 @@ void RayGeneration()
 {
     uvec2 p = DispatchRaysIndex().xy;
     uvec4 seed = uvec4(p, uint(g_constants.frame_index), uint(p.x) + uint(p.y));
-    rand(seed);
 
     float2 jitter = rand2(seed);
 
@@ -125,7 +106,7 @@ void RayGeneration()
     ray.Origin = origin;
     ray.Direction = dir;
     ray.TMin = 0.01;
-    ray.TMax = 1000.0;
+    ray.TMax = 100000.0;
 
     HitInfo payload = {
         vec3(0, 0, 0),
@@ -150,10 +131,16 @@ void RayGeneration()
         }
     }
 
-    vec3 old_color = output[p].xyz;
-    float samples = g_constants.samples;
-    output[p].xyz = (old_color * (samples - 1) + payload.color) / samples;
-    output[p].w = 1.0;
+    vec4 color = vec4(payload.color, 1.0);
+    // if(any(isnan(payload.color))) {
+    //     color = 0.0;
+    // }
+
+    if(g_constants.samples == 1) {
+        output[p].xyzw = color;
+    } else {
+        output[p].xyzw += color;
+    }
 }
 
 
@@ -163,52 +150,19 @@ void Miss(inout HitInfo payload)
     payload.distance = -1.0;
 }
 
-
-uint MurmurMix(uint Hash)
-{
-	Hash ^= Hash >> 16;
-	Hash *= 0x85ebca6b;
-	Hash ^= Hash >> 13;
-	Hash *= 0xc2b2ae35;
-	Hash ^= Hash >> 16;
-	return Hash;
-}
-
-float3 IntToColor(uint Index)
-{
-	uint Hash = MurmurMix(Index);
-
-	float3 Color = float3
-	(
-		(Hash >>  0) & 255,
-		(Hash >>  8) & 255,
-		(Hash >> 16) & 255
-	);
-
-	return Color * (1.0f / 255.0f);
-}
-
-mat3 frameFromDirection(vec3 a) {
-    vec3 b, c;
-    if (abs(a.x) > abs(a.y)) {
-        float invLen = 1.0f / sqrt(a.x * a.x + a.z * a.z);
-        c = vec3(a.z * invLen, 0.0f, -a.x * invLen);
-    } else {
-        float invLen = 1.0f / sqrt(a.y * a.y + a.z * a.z);
-        c = vec3(0.0f, a.z * invLen, -a.y * invLen);
-    }
-    b = cross(c, a);
-    return mat3(b, c, a);
-}
-
 [shader("closesthit")]
 void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes attribs)
 {
-    vec3 position = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+    // Hit position
+    vec3 direction = WorldRayDirection();
+    vec3 position = WorldRayOrigin() + RayTCurrent() * direction;
 
-    uint triangle_index = PrimitiveIndex();
+    // Mesh info
     uint mesh_index = InstanceID();
-    MeshInstance instance = instances_buffer[mesh_index];
+    RayMeshInstance instance = instances_buffer[mesh_index];
+
+    // Primitive info
+    uint triangle_index = PrimitiveIndex();
     uint index_offset = instance.index_offset;
     uint vertex_offset = instance.vertex_offset;
 
@@ -223,50 +177,20 @@ void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes 
         normals_buffer[indices.x + vertex_offset] * (1 - barycentrics.x - barycentrics.y) +
         normals_buffer[indices.y + vertex_offset] * barycentrics.x +
         normals_buffer[indices.z + vertex_offset] * barycentrics.y;
-
-
-    vec3 camera_p = g_constants.camera_position;
-    vec3 diffuse = g_constants.diffuse_color;
-
-    vec3 L = -g_constants.light_direction;
-
-    RayDesc shadow_ray;
-    shadow_ray.Origin = position;
-    shadow_ray.Direction = L;
-    shadow_ray.TMin = 0.01;
-    shadow_ray.TMax = 1000.0;
-    HitInfo shadow_payload = {
-        vec3(0, 0, 0),
-        vec3(0, 0, 0),
-        vec3(0, 0, 0),
-        0.0,
-        uvec4(0, 0, 0, 0),
-    };
-
-    TraceRay(scene,
-        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
-        RAY_FLAG_CULL_BACK_FACING_TRIANGLES |
-        RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, ~0, 0, 1, 0,
-        shadow_ray, shadow_payload);
-
     vec3 N = normalize(mul((float3x3)ObjectToWorld(), normal));
+
     vec2 uv =
         uvs_buffer[indices.x + vertex_offset] * (1 - barycentrics.x - barycentrics.y) +
         uvs_buffer[indices.y + vertex_offset] * barycentrics.x +
         uvs_buffer[indices.z + vertex_offset] * barycentrics.y;
 
-    vec3 albedo = 1.0;
 
+    // Material info
+    vec3 albedo = 1.0;
     if(instance.albedo_index != 0xFFFFFFFF) {
        albedo = textures[instance.albedo_index].SampleLevel(linear_sampler, uv, 0.0f).rgb;
     } else {
         albedo = instance.albedo_value.rgb;
-    }
-
-    vec3 radiance = g_constants.light_radiance;
-
-    if(shadow_payload.distance < 0.0) {
-        payload.color += payload.throughput * max(dot(N, L), 0) * radiance * albedo / PI;
     }
 
     vec3 emissive = 0;
@@ -284,46 +208,90 @@ void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes 
         specular = instance.specular_value.gb;
     }
 
-    float roughness = specular.r;
-    float metallic = specular.g;
+    // Local frame
+    Frame frame;
+    if(all(payload.throughput == 1.0)) {
+        vec3 tangent =
+            tangents_buffer[indices.x + vertex_offset] * (1 - barycentrics.x - barycentrics.y) +
+            tangents_buffer[indices.y + vertex_offset] * barycentrics.x +
+            tangents_buffer[indices.z + vertex_offset] * barycentrics.y;
+        vec3 T = normalize(mul((float3x3)ObjectToWorld(), tangent));
+        vec3 B = normalize(cross(N, T));
+        if (any(isnan(B)) || g_constants.debug == 5) {
+            frame = frameFromNormal(N);
+        }
+        else {
+            frame = makeFrame(T, B, N);
+            if(instance.normal_index != 0xFFFFFFFF) {
+                vec2 n = textures[instance.normal_index].SampleLevel(linear_sampler, uv, 0.0f).rg * 2.0 - 1.0;
+                // Lerp towards local +Z when viewing at grazing angle
+                float weight = max(dot(N, -direction), 0.0);
+                n = lerp(0.0, n, weight);
 
+                float z = sqrt(1.0 - n.x * n.x - n.y * n.y);
+                N = toWorld(frame, vec3(n, z));
+                B = normalize(cross(N, T));
+                T = normalize(cross(B, N));
+                frame = makeFrame(T, B, N);
+            }
+        }
+    } else {
+        frame = frameFromNormal(N);
+    }
+
+    vec3 wo = toLocal(frame, -direction);
+
+    // BRDF
+    float roughness = max(specular.r, 0.05);
+    float metallic = specular.g;
+    float alpha = square(roughness);
+
+    // Direct lighting
+    vec3 radiance = g_constants.light_radiance;
+    vec3 L = -g_constants.light_direction;
+
+    // Shadowing
+    RayDesc shadow_ray;
+    shadow_ray.Origin = position;
+    shadow_ray.Direction = L;
+    shadow_ray.TMin = 0.01;
+    shadow_ray.TMax = 100000.0;
+    HitInfo shadow_payload = {
+        vec3(0, 0, 0),
+        vec3(0, 0, 0),
+        vec3(0, 0, 0),
+        0.0,
+        uvec4(0, 0, 0, 0),
+    };
+    TraceRay(scene,
+        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
+        RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, ~0, 0, 1, 0,
+        shadow_ray, shadow_payload);
+
+    if(shadow_payload.distance < 0.0) {
+        vec3 wi = toLocal(frame, L);
+        vec3 f = evalPrincipledBrdf(alpha, metallic, albedo, wo, wi);
+        payload.color += payload.throughput * f * radiance * max(dot(N, L), 0);
+    }
+
+
+    // Brdf sampling
+    vec3 u = rand3(payload.seed);
+
+    vec3 sampled_dir;
+    float pdf;
+    vec3 f = samplePrincipledBrdf(alpha, metallic, albedo, wo, u, sampled_dir, pdf);
+
+    payload.direction = toWorld(frame, sampled_dir);
+    payload.throughput *= pdf > 0.0 ? f / pdf : 0.0;
+    payload.distance = RayTCurrent();
+
+    // Debug
     switch(g_constants.debug) {
         case 1: payload.color = roughness; break;
         case 2: payload.color = metallic; break;
         case 3: payload.color = emissive; break;
-        case 4: payload.color = N * 0.5 + 1.0; break;
+        case 4: payload.color = N * 0.5 + 0.5; break;
+        case 5: break;
     }
-        /*
-        vec3 V = normalize(camera_p - position);
-        vec3 H = normalize(L + V);
-
-        vec3 ka = 0.1;
-        vec3 kd = max(dot(L, N), 0);
-        vec3 ks = pow(max(dot(N, H), 0), 16.0) * 0.0;
-
-        // vec3 color = diffuse * (ka + kd) + specular * ks;
-        // vec3 color = specular * (PrimitiveIndex() / 100000.0);
-        // vec3 color = N * 0.5 + 1.0;
-        // vec3 color = vec3(barycentrics, 1- barycentrics.x - barycentrics.y);
-        vec3 diff = 1.0;
-*/
-/*
-    vec3 diff;
-    if(instance.albedo_index != 0xFFFFFFFF) {
-        vec2 uv =
-            uvs_buffer[indices.x + vertex_offset] * (1 - barycentrics.x - barycentrics.y) +
-            uvs_buffer[indices.y + vertex_offset] * barycentrics.x +
-            uvs_buffer[indices.z + vertex_offset] * barycentrics.y;
-
-       diff = textures[instance.albedo_index].SampleLevel(linear_sampler, uv, 0.0f).rgb;
-    } else {
-        diff = vec3(0.5, 0.1, 0.1);
-    }
-
-    vec3 color = diff * (ka + kd) + specular * ks;
-*/
-    mat3 frame = frameFromDirection(N);
-    payload.direction = mul(frame, sampleCosineWeightedHemisphere(payload.seed));
-    payload.throughput *= albedo;
-    payload.distance = RayTCurrent();
 }

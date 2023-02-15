@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use std::path::Path;
 use std::io::{Read, Write};
 
@@ -85,12 +87,12 @@ fn main() {
         let mut file = std::fs::File::create(output_path).expect("Failed to create output file");
         for c in vec.chunks(1024 * 1024 * 1024) {
             let compressed = lz4::block::compress(&c, None, true).expect("Failed to compress scene");
-            file.write_all(&(compressed.len() as u32).to_le_bytes());
+            file.write_all(&(compressed.len() as u32).to_le_bytes()).expect("Failed to write file");
             file.write_all(&compressed).expect("Failed to write file")
         }
     }
 
-
+/*
     else {
         let mut total_secs: f64 = 0.0;
 
@@ -177,5 +179,6 @@ fn main() {
     let secs = begin.elapsed().as_secs_f64();
     println!("Read {} bytes in {:.3}s ({:.3} GB/s)", bytes, secs, bytes as f64 / (1024. * 1024. * 1024. * secs));
     */
+*/
 
 }

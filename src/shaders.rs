@@ -1,5 +1,64 @@
+use bytemuck::{Zeroable, Pod};
+
+#[allow(unused_imports)]
+use math::{vec::{Vec2, Vec3, Vec4}, mat::Mat4};
 use crate::d3d12::Shader;
 
+#[allow(dead_code)]
+#[derive(Default, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct Constants {
+    pub camera_position: Vec3,
+    pub _padding0: u32,
+
+    pub camera_direction: Vec3,
+    pub _padding1: u32,
+
+    pub light_direction: Vec3,
+    pub light_radiance: f32,
+
+    pub diffuse_color: Vec3,
+    pub film_dist: f32,
+
+    pub projection: Mat4,
+
+    pub view: Mat4,
+
+    pub frame_index: u32,
+    pub samples: u32,
+    pub emissive_multiplier: f32,
+    pub debug: u32,
+
+}
+
+#[allow(dead_code)]
+#[derive(Default, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct RayMeshInstance {
+    pub vertex_offset: u32,
+    pub index_offset: u32,
+    pub albedo_index: u32,
+    pub normal_index: u32,
+    pub specular_index: u32,
+    pub emissive_index: u32,
+    pub albedo_value: Vec4,
+    pub specular_value: Vec4,
+    pub emissive_value: Vec4,
+}
+
+#[allow(dead_code)]
+#[derive(Default, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct RasterMeshInstance {
+    pub transform: Mat4,
+    pub albedo_index: u32,
+    pub normal_index: u32,
+    pub specular_index: u32,
+    pub emissive_index: u32,
+    pub albedo_value: Vec4,
+    pub specular_value: Vec4,
+    pub emissive_value: Vec4,
+}
 
 #[allow(dead_code)]
 pub const CLEAR_CS: Shader = Shader {
@@ -29,6 +88,12 @@ pub const MESH_PS: Shader = Shader {
 pub const MESH_VS: Shader = Shader {
     data: include_bytes!("../res/mesh.vs.bin"),
     name: "mesh",
+};
+
+#[allow(dead_code)]
+pub const POSTPROCESS_CS: Shader = Shader {
+    data: include_bytes!("../res/postprocess.cs.bin"),
+    name: "postprocess",
 };
 
 #[allow(dead_code)]

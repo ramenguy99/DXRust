@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use image::io::Reader as ImageReader;
 use gltf::{Gltf};
 
@@ -13,7 +15,7 @@ use math::{
     quat::Quat,
 };
 
-
+#[allow(unused)]
 pub fn import_node(blob: &Vec<u8>, scene: &mut Scene, node: gltf::Node,
     parent: Mat4) -> Option<()> {
 
@@ -46,6 +48,10 @@ pub fn import_node(blob: &Vec<u8>, scene: &mut Scene, node: gltf::Node,
                 .map(|x| Vec3::from_slice(&x)).collect();
             let uvs = reader.read_tex_coords(0).unwrap().into_f32()
                 .map(|x| Vec2::from_slice(&x)).collect();
+            let tangents = reader.read_tangents().unwrap()
+                .map(|x| {
+                    Vec3::from_slice((&x[..3]).try_into().unwrap()) * x[3]
+                }).collect();
 
             use gltf::mesh::util::ReadIndices;
             let indices = match reader.read_indices().unwrap() {
@@ -78,6 +84,7 @@ pub fn import_node(blob: &Vec<u8>, scene: &mut Scene, node: gltf::Node,
             scene.meshes.push(Mesh {
                 positions,
                 normals,
+                tangents,
                 uvs,
                 indices,
                 transform: transform,
@@ -103,7 +110,7 @@ pub fn import_node(blob: &Vec<u8>, scene: &mut Scene, node: gltf::Node,
     Some(())
 }
 
-
+#[allow(unused)]
 pub fn import_file(path: &Path) -> Option<Scene> {
     let mut scene = Scene::new();
 
@@ -113,7 +120,7 @@ pub fn import_file(path: &Path) -> Option<Scene> {
     let blob = gltf.blob.take().unwrap();
 
     for s in gltf.scenes() {
-        for (i, n) in s.nodes().enumerate() {
+        for n in s.nodes() {
             import_node(&blob, &mut scene, n, Mat4::identity())?;
         }
     }
@@ -155,13 +162,6 @@ pub struct BistroImporter {
     texture_directory: PathBuf,
 }
 
-enum TextureType {
-    BaseColor,
-    Normal,
-    Specular,
-    Emissive,
-}
-
 impl BistroImporter {
     pub fn import(glb_path: &Path, texture_directory: &Path) -> Option<Scene> {
         let mut importer = BistroImporter {
@@ -176,7 +176,7 @@ impl BistroImporter {
         let blob = gltf.blob.take().unwrap();
 
         for s in gltf.scenes() {
-            for (i, n) in s.nodes().enumerate() {
+            for n in s.nodes() {
                 importer.import_node(&blob, n, Mat4::identity())?;
             }
         }
@@ -212,6 +212,10 @@ impl BistroImporter {
                     .map(|x| Vec3::from_slice(&x)).collect();
                 let uvs = reader.read_tex_coords(0).unwrap().into_f32()
                     .map(|x| Vec2::from_slice(&x)).collect();
+                let tangents = reader.read_tangents().unwrap()
+                    .map(|x| {
+                        Vec3::from_slice((&x[..3]).try_into().unwrap()) * x[3]
+                    }).collect();
 
                 use gltf::mesh::util::ReadIndices;
                 let indices = match reader.read_indices().unwrap() {
@@ -226,6 +230,7 @@ impl BistroImporter {
                     positions,
                     normals,
                     uvs,
+                    tangents,
                     indices,
                     transform: transform,
                     material,
@@ -262,7 +267,7 @@ impl BistroImporter {
         let specular   = format!("{}Specular.png",  name);
         let emissive   = format!("{}Emissive.png",  name);
 
-        let base_color = self.texture(&base_color, Format::RGBA8);
+        let base_color = self.texture(&base_color, Format::SRGBA8);
         let normal     = self.texture(&normal,     Format::RGBA8);
         let specular   = self.texture(&specular,   Format::RGBA8);
         let emissive   = self.texture(&emissive,   Format::RGBA8);
@@ -279,7 +284,6 @@ impl BistroImporter {
         let path = self.texture_directory.join(path);
 
         if !path.exists() {
-            println!("{path:?}");
             return MaterialParameter::None;
         }
 
@@ -291,7 +295,7 @@ impl BistroImporter {
 
                 let img = ImageReader::open(&v.key()).unwrap().decode().unwrap();
                 let param = match format {
-                    Format::RGBA8 => {
+                    Format::RGBA8 | Format::SRGBA8 => {
                         let img = img.into_rgba8();
                         if img.width() == 1 && img.height() == 1 {
                             let rgb = img.get_pixel(0, 0).0;

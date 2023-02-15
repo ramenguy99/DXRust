@@ -12,6 +12,7 @@ use bytemuck::{bytes_of, cast_slice, Pod, pod_read_unaligned};
 pub struct Mesh {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
+    pub tangents: Vec<Vec3>,
     pub uvs: Vec<Vec2>,
     pub indices: Vec<u32>,
 
@@ -38,12 +39,14 @@ impl Scene {
 #[repr(C)]
 pub enum Format {
     RGBA8,
+    SRGBA8,
 }
 
 impl Into<u32> for Format {
     fn into(self) -> u32 {
         match self {
             Format::RGBA8 => 0,
+            Format::SRGBA8 => 1,
         }
     }
 }
@@ -54,6 +57,7 @@ impl TryFrom<u32> for Format {
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Format::RGBA8),
+            1 => Ok(Format::SRGBA8),
             _ => Err("Unknown format"),
         }
     }
@@ -152,6 +156,7 @@ impl Serialize for Mesh {
     fn serialize_buf(&self, buf: &mut Vec<u8>) {
         self.positions.serialize_buf(buf);
         self.normals.serialize_buf(buf);
+        self.tangents.serialize_buf(buf);
         self.uvs.serialize_buf(buf);
         self.indices.serialize_buf(buf);
         (&self.transform).serialize_buf(buf);
@@ -260,6 +265,7 @@ impl Deserialize for Mesh {
         Mesh {
             positions: Vec::<Vec3>::deserialize(buf),
             normals: Vec::<Vec3>::deserialize(buf),
+            tangents: Vec::<Vec3>::deserialize(buf),
             uvs: Vec::<Vec2>::deserialize(buf),
             indices: Vec::<u32>::deserialize(buf),
 
