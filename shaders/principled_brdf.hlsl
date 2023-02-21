@@ -57,14 +57,16 @@ float pdfPrincipledBrdf(float alpha, float metallic, vec3 wo, vec3 wi) {
 }
 
 vec3 samplePrincipledBrdf(float alpha, float metallic, vec3 base_color,
-                          vec3 wi, vec3 u, out vec3 wo, out float pdf) {
+                          vec3 wi, vec2 u, out vec3 wo, out float pdf) {
     float diffuse_weight = 1.0 - metallic;
     vec3 wh;
     if (u.x < diffuse_weight) {
-        wo = sampleCosineWeightedHemisphere(u.yz);
+        u.x /= diffuse_weight;
+        wo = sampleCosineWeightedHemisphere(u.xy);
         wh = normalize(wo + wi);
     } else {
-        wh = sampleGTR2(u.yz, alpha);
+        u.x = (u.x - diffuse_weight) / metallic;
+        wh = sampleGTR2(u.xy, alpha);
         wo = 2 * dot(wi, wh) * wh - wi;
     }
 

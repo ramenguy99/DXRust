@@ -1,18 +1,31 @@
 //#![windows_subsystem = "windows"]
+#![feature(allocator_api)]
 
 use std::time::Instant;
+use std::boxed::Box;
+use std::borrow::Cow;
+
+use tev_client::{TevClient, PacketCreateImage, PacketUpdateImage};
+use bytemuck::cast_slice;
 
 use math::vec::{Vec2, Vec3, Vec4};
 use math::mat::{Mat4};
-use scene::{Camera, Direction};
+use scene::{Scene, Camera, Direction};
 use render::{Raster, Ray, Pipeline, SceneConstants};
 use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
+use pclip::Mapping;
+
+use crate::allocator::FixedBaseAllocator;
 
 mod win32;
 mod d3d12;
 mod shaders;
 mod imgui_impl;
 mod render;
+
+mod allocator;
+
+const USE_PCLIP: bool = true;
 
 #[allow(unused_macros)]
 macro_rules! debug_break {
@@ -31,22 +44,59 @@ fn main() {
     //     std::process::exit(1);
     // });
 
+    let mut allocator = FixedBaseAllocator::new();
+
     let path = std::env::args().nth(1).unwrap_or(
         String::from("crates/asset/bistro.lz4"));
 
-    let mut scene = asset::load_scene_from_file(&Path::new(&path))
-        .expect("Failed to open asset file");
+    let start_time = Instant::now();
+    let scene = if USE_PCLIP {
+        match Mapping::open(b"bistro") {
+            Ok(mapping) => {
+                let scene = mapping.data.as_ptr() as *mut Scene<&FixedBaseAllocator>;
+                core::mem::forget(mapping);
+                unsafe { core::ptr::read(scene) }
+            },
+            Err(pclip::Error::NotFound) => {
+                // let data = scene.serialize();
+                match Mapping::create(b"bistro", 1 << 32, Some(2 << 40)) {
+                    Ok(mapping) => {
+                        allocator.init(mapping.data.as_mut_ptr(), mapping.data.len() as u64);
 
-    let to_z_up = Mat4::from_columns(&[
-        Vec4::new(1., 0., 0., 0.),
-        Vec4::new(0., 0., 1., 0.),
-        Vec4::new(0., 1., 0., 0.),
-        Vec4::new(0., 0., 0., 1.),
-    ]).transpose();
+                        let b = asset::load_scene_from_file_with_allocator(&Path::new(&path), &allocator)
+                            .expect("Failed to open asset file");
+                        let scene = Box::leak(b) as *mut Scene<&FixedBaseAllocator>;
 
-    for m in scene.meshes.iter_mut() {
-        m.transform = to_z_up * m.transform;
-    }
+                        // Assert that the scene is at the top of the mapping (we ensure this by making sure it's the first thing we allocate).
+                        assert!(scene == mapping.data.as_ptr() as *mut Scene<&FixedBaseAllocator>, "{:?} {:?}", scene, mapping.data.as_ptr());
+
+                        // Leak the mapping so that we only unmap on exit.
+                        core::mem::forget(mapping);
+
+                        // Transform to z up;
+                        let to_z_up = Mat4::from_columns(&[
+                            Vec4::new(1., 0., 0., 0.),
+                            Vec4::new(0., 0., 1., 0.),
+                            Vec4::new(0., 1., 0., 0.),
+                            Vec4::new(0., 0., 0., 1.),
+                        ]).transpose();
+
+                        let mut scene = unsafe { core::ptr::read(scene) };
+                        for m in scene.meshes.iter_mut() {
+                            m.transform = to_z_up * m.transform;
+                        }
+
+                        scene
+                    },
+                    Err(e) => panic!("Unable to create mapping: {:?}", e),
+                }
+            },
+            Err(e) => panic!("Unable to open mapping: {:?}", e),
+        }
+    } else {
+        panic!();
+        // asset::load_scene_from_file(&Path::new(&path)).expect("Failed to open asset file")
+    };
 
     let mut window = win32::create_window("Rust window", 1280, 720)
         .expect("Failed to create window");
@@ -68,6 +118,7 @@ fn main() {
     let ray = Box::new(Ray::init(&window, &d3d12, &scene));
 
     assert!(d3d12.csu_descriptor_heap.offset() == 10);
+
     let mut textures: Vec<ID3D12Resource> = Vec::new();
     for img in &scene.images {
         let descriptor = d3d12.alloc_csu_descriptor().unwrap();
@@ -83,6 +134,7 @@ fn main() {
     }
     d3d12.wait_sync_commands();
 
+
     let mut ray_scene:  Box<dyn Pipeline> = ray;
     let mut raster_scene: Box<dyn Pipeline> = raster;
 
@@ -93,18 +145,21 @@ fn main() {
         camera_pos,
         Vec3::new(0., 0., 0.),
         Vec3::new(0., 0., 1.),
-        0., 0., 0., 0., 5., 1.
+        0., 0., 0., 0., 20., 1.
     );
 
 
     let mut constants = SceneConstants {
         camera_position: camera_pos,
         camera_direction: camera.forward,
-        light_direction: Vec3::new(0.3, 0.3, -1.0).normalized(), //Vec3::new(-0.496, 0.694, -0.522).normalized(),
-        light_radiance: 5.0,
+        light_direction: Vec3::new(-0.496, 0.694, -0.522).normalized(), //Vec3::new(0.3, 0.3, -1.0).normalized(),
+        light_radiance: 0.0,
         diffuse_color: Vec3::new(0., 1., 0.),
         film_dist: 0.7,
-        emissive_multiplier: 0.0,
+        emissive_multiplier: 100.0,
+        bounces: 8,
+        sampling_mode: 2,
+        use_alias_table: 1,
         ..Default::default()
     };
     const NIGHT: bool = false;
@@ -121,6 +176,8 @@ fn main() {
     let mut dragging = false;
     let mut moving = false;
     let mut direction = Direction::Forward;
+
+    println!("Total time: {:.3}s", start_time.elapsed().as_secs_f64());
 
     'main: loop {
         let mut reset = false;
@@ -145,6 +202,13 @@ fn main() {
                 KeyPress(Some(i @ ('1' | '2' | '3' | '4' | '5' | '6' ))) => {
                     let i = i.to_digit(10).unwrap() - 1;
                     constants.debug = i;
+                    reset = true;
+                },
+
+
+                KeyPress(Some(i @ ('7' | '8' | '9'))) => {
+                    let i = i.to_digit(10).unwrap() - 7;
+                    constants.sampling_mode = i;
                     reset = true;
                 },
 
@@ -174,6 +238,36 @@ fn main() {
                 }
                 KeyRelease(_) => {
                     moving = false;
+                }
+
+                KeyPress(Some('P')) => {
+                    if let Some((name, data)) = scene.capture_screenshot(&d3d12, &constants){
+                        if let Ok(stream) = std::net::TcpStream::connect("127.0.0.1:14158") {
+                            let mut client = TevClient::wrap(stream);
+
+                            let channel_names = ["R", "G", "B"];
+                            client.send(PacketCreateImage {
+                                image_name: &name,
+                                grab_focus: false,
+                                width: window.width(),
+                                height: window.height(),
+                                channel_names: &channel_names,
+                            }).unwrap();
+
+                            client.send(PacketUpdateImage {
+                                image_name: &name,
+                                grab_focus: false,
+                                channel_names: &channel_names,
+                                channel_offsets: &[0, 1, 2],
+                                channel_strides: &[3, 3, 3],
+                                x: 0,
+                                y: 0,
+                                width: window.width(),
+                                height: window.height(),
+                                data: cast_slice(&data),
+                            }).unwrap();
+                        }
+                    }
                 }
 
                 KeyPress(Some('R')) => {
@@ -268,71 +362,95 @@ fn main() {
                 // let mut opened = true;
                 // ui.show_demo_window(&mut opened);
 
-                ui.window("Hello world")
+                ui.window("Renderer")
                     .position([20., 20.], imgui::Condition::FirstUseEver)
-                    .size([380., 250.], imgui::Condition::FirstUseEver)
-                    .build(|| {
-                        ui.text(format!("{:.3}ms ({:.3}fps)",
-                                        avg_frame_time * 1000.0,
-                                        1.0 / avg_frame_time));
-                        if imgui::Drag::new("Film distance").range(0.1, 2.0)
-                            .speed(0.01).build(&ui, &mut constants.film_dist) {
-                            reset = true;
-                        }
+                    .size([380., 600.], imgui::Condition::FirstUseEver).build(|| {
 
-                        if imgui::Drag::new("Radiance")
-                            .range(0., 100.0)
-                            .speed(0.1)
-                            .build(&ui, &mut constants.light_radiance) {
-                            reset = true;
-                        }
+                    ui.text(format!("{:.3}ms ({:.3}fps)",
+                                    avg_frame_time * 1000.0,
+                                    1.0 / avg_frame_time));
+                    ui.separator();
+                    ui.text("Scene:");
+                    let mut pos = constants.camera_position.to_slice();
+                    if imgui::Drag::new("Camera position")
+                        .build_array(&ui, &mut pos) {
+                        reset = true;
+                        camera.position = Vec3::from_slice(&pos);
+                    }
 
-                        let mut dir = constants.light_direction.to_slice();
-                        if imgui::Drag::new("Light direction")
-                            .speed(0.01)
-                            .build_array(&ui, &mut dir) {
-                            reset = true;
-                            constants.light_direction = Vec3::from_slice(&dir).normalized();
-                        }
+                    if imgui::Drag::new("Film distance").range(0.1, 2.0)
+                        .speed(0.01).build(&ui, &mut constants.film_dist) {
+                        reset = true;
+                    }
 
-                        if imgui::Drag::new("Emissive")
-                            .range(0., 1000.0)
-                            .speed(0.1)
-                            .build(&ui, &mut constants.emissive_multiplier) {
-                            reset = true;
-                        }
+                    let mut dir = constants.light_direction.to_slice();
+                    if imgui::Drag::new("Sun direction")
+                        .speed(0.01)
+                        .build_array(&ui, &mut dir) {
+                        reset = true;
+                        constants.light_direction = Vec3::from_slice(&dir).normalized();
+                    }
 
-                        let mut index = constants.debug as usize;
-                        let items = [
-                            "Rendered",
-                            "Roughness",
-                            "Metallic",
-                            "Emissive",
-                            "Normals",
-                            "Debug",
-                        ];
+                    if imgui::Drag::new("Sun Radiance")
+                        .range(0., 100.0)
+                        .speed(0.1)
+                        .build(&ui, &mut constants.light_radiance) {
+                        reset = true;
+                    }
 
-                        use std::borrow::Cow;
-                        if ui.combo("Debug view", &mut index,
-                            &items, |v| Cow::from(*v)) {
+                    if imgui::Drag::new("Emissive")
+                        .range(0., 1000.0)
+                        .speed(0.1)
+                        .build(&ui, &mut constants.emissive_multiplier) {
+                        reset = true;
+                    }
 
-                            reset = true;
-                            constants.debug = index as u32;
-                        }
+                    ui.separator();
+                    ui.text("Settings:");
+                    if ui.input_scalar("Bounces",  &mut constants.bounces).step(1).build() {
+                        reset = true;
+                    }
 
+                    let mut use_alias = constants.use_alias_table != 0;
+                    if ui.checkbox("Use alias table",  &mut use_alias) {
+                        constants.use_alias_table = use_alias.into();
+                        reset = true;
+                    }
 
-                        let mut pos = constants.camera_position.to_slice();
-                        if imgui::Drag::new("Camera position")
-                            .build_array(&ui, &mut pos) {
-                            reset = true;
-                            constants.camera_position = Vec3::from_slice(&pos);
-                        }
+                    let mut index = constants.sampling_mode as usize;
+                    let items = [
+                        "Lights",
+                        "BRDF",
+                        "MIS",
+                    ];
+                    if ui.combo("Sampling mode", &mut index,
+                        &items, |v| Cow::from(*v)) {
 
+                        reset = true;
+                        constants.sampling_mode = index as u32;
+                    }
 
-                        ui.text(format!("Samples: {}", constants.samples));
-                    });
-                }
-            );
+                    let mut index = constants.debug as usize;
+                    let items = [
+                        "Rendered",
+                        "Roughness",
+                        "Metallic",
+                        "Emissive",
+                        "Normals",
+                        "Debug",
+                    ];
+                    if ui.combo("Debug view", &mut index,
+                        &items, |v| Cow::from(*v)) {
+
+                        reset = true;
+                        constants.debug = index as u32;
+                    }
+
+                    ui.text(format!("Sun p: {}", (constants.light_radiance * 10.0 /
+                        (constants.light_radiance * 10.0 + constants.emissive_multiplier)).clamp(0.05, 0.95)));
+                    ui.text(format!("Samples: {}", constants.samples));
+                });
+            });
 
             scene.render(&d3d12, &frame, index, &mut constants, reset);
             imgui_impl.render(&mut imgui, &d3d12, &frame, index);

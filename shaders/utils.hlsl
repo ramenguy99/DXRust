@@ -80,4 +80,12 @@ float linearToSRGB(float v) {
     }
 }
 
+float luminance(vec3 x) {
+    return dot(x, vec3(0.212671, 0.715160, 0.072169));
+}
+
+float balance_heuristic(float pa, float pb) {
+    return 1.0f / (pa + pb);
+}
+
 #endif

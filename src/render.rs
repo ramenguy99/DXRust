@@ -1,5 +1,6 @@
 use core::ptr::{null, null_mut};
 use core::mem::{size_of, size_of_val};
+use std::alloc::Allocator;
 
 use bytemuck::cast_slice;
 use math::vec::{Vec2, Vec3, Vec4};
@@ -7,17 +8,22 @@ use math::vec::{Vec2, Vec3, Vec4};
 use scene::{Mesh, Scene};
 
 use crate::d3d12::{self, ResourceDesc, ResourceBarrier};
-use crate::shaders::{self, RayMeshInstance, RasterMeshInstance};
+use crate::shaders::{self, RayMeshInstance, RasterMeshInstance, Light};
 pub use crate::shaders::Constants as SceneConstants;
 use crate::win32;
 
-const MAX_SAMPLES: u32 = 1024;
+const MAX_SAMPLES: u32 = 512;
 
 pub trait Pipeline {
     fn resize(&mut self, d3d12: &d3d12::Context, width: u32, height:u32);
 
     fn render(&mut self, d3d12: &d3d12::Context, frame: &d3d12::Frame,
               _frame_index: u32, constants: &mut SceneConstants, reset: bool);
+
+    fn capture_screenshot(&mut self, _d3d12: &d3d12::Context, _constants: &SceneConstants)
+        -> Option<(String, Vec<Vec3>)> {
+        None
+    }
 }
 
 pub struct Raster {
@@ -56,8 +62,8 @@ struct DrawArgs {
 }
 
 impl Raster {
-    pub fn init(window: &win32::Window, d3d12: &d3d12::Context,
-            scene: &Scene) -> Self {
+    pub fn init<A: Allocator + Copy>(window: &win32::Window, d3d12: &d3d12::Context,
+            scene: &Scene<A>) -> Self {
 
         let rs =
             d3d12.create_root_signature_from_shader(&shaders::MESH_VS)
@@ -430,6 +436,12 @@ pub struct Ray {
     constant_buffer:                d3d12::PerFrameConstantBuffer,
     mesh_instances:                 d3d12::ID3D12Resource,
     mesh_instances_desc_handle:     d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
+    lights_buffer:                  d3d12::ID3D12Resource,
+    lights_cdf_buffer:              d3d12::ID3D12Resource,
+    lights:                         Vec<Light>,
+    lights_cdf:                     Vec<f32>,
+    lights_pdf_normalization:       f32,
+    alias_table_buffer:           d3d12::ID3D12Resource,
 
     postprocess_rs:                 d3d12::ID3D12RootSignature,
     postprocess_pso:                d3d12::ID3D12PipelineState,
@@ -437,13 +449,62 @@ pub struct Ray {
     postprocess_input_desc_handle:  d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
     postprocess_output_desc_handle: d3d12::D3D12_CPU_DESCRIPTOR_HANDLE,
 
-    samples: u32,
+    pub samples: u32,
     max_samples: u32,
 }
 
+/// Alias method from:
+/// https://www.keithschwarz.com/interesting/code/?dir=alias-method
+fn create_alias_table(mut probabilities: Vec::<f64>) -> Vec<shaders::Alias> {
+    assert!(probabilities.len() < u32::MAX as usize);
+
+    let n = probabilities.len() as f64;
+    let avg =  1.0 / n;
+
+    let mut small: Vec<u32> = Vec::new();
+    let mut large: Vec<u32> = Vec::new();
+
+    for (i, p) in probabilities.iter().enumerate() {
+        if *p < avg {
+            small.push(i as u32);
+        } else {
+            large.push(i as u32);
+        }
+    }
+
+    let mut table = vec![shaders::Alias { p: 0.0, a: u32::MAX};
+                         probabilities.len()];
+
+    while !small.is_empty() && !large.is_empty() {
+        let s = small.pop().unwrap() as usize;
+        let l = large.pop().unwrap() as usize;
+
+        table[s].p = (probabilities[s] * n) as f32;
+        table[s].a = l as u32;
+
+        probabilities[l] = (probabilities[l] + probabilities[s]) - avg;
+
+        if probabilities[l] >= avg {
+            large.push(l as u32);
+        } else {
+            small.push(l as u32);
+        }
+    }
+
+    for s in small {
+        table[s as usize].p = 1.0;
+    }
+
+    for l in large {
+        table[l as usize].p = 1.0;
+    }
+
+    table
+}
+
 impl Ray {
-    pub fn init(window: &win32::Window, d3d12: &d3d12::Context,
-            scene: &Scene) -> Self {
+    pub fn init<A: Allocator + Copy>(window: &win32::Window, d3d12: &d3d12::Context,
+            scene: &Scene<A>) -> Self {
         let rs = d3d12.create_root_signature_from_shader(&shaders::RAY_LIB)
             .expect("Failed to create root signature");
 
@@ -876,6 +937,84 @@ impl Ray {
             d3d12::D3D12_UAV_DIMENSION_TEXTURE2D,
             &postprocess_buffer, postprocess_output_desc_handle);
 
+
+
+        // let mut emissive_textures: u64 = 0;
+        // let mut emissive_materials: u64 = 0;
+        // let mut emissive_triangles: u64 = 0;
+
+
+        let mut lights_pdf: Vec<f32> = Vec::new();
+        let mut lights: Vec<Light> = Vec::new();
+
+        for m in &scene.meshes {
+            match m.material.emissive  {
+                scene::MaterialParameter::None => {},
+                scene::MaterialParameter::Texture(_) => {}, // emissive_textures += 1,
+                scene::MaterialParameter::Vec4(e) => if e.x != 0. || e.y != 0. || e.z != 0. {
+                    // emissive_materials += 1;
+                    // emissive_triangles += m.indices.len() as u64 / 3;
+
+                    for i in 0..m.indices.len() / 3 {
+                        let p0 = m.positions[m.indices[i * 3 + 0] as usize];
+                        let p1 = m.positions[m.indices[i * 3 + 1] as usize];
+                        let p2 = m.positions[m.indices[i * 3 + 2] as usize];
+
+                        let p0 = m.transform * Vec4::new(p0.x, p0.y, p0.z, 1.0);
+                        let p1 = m.transform * Vec4::new(p1.x, p1.y, p1.z, 1.0);
+                        let p2 = m.transform * Vec4::new(p2.x, p2.y, p2.z, 1.0);
+
+                        let p0 = Vec3::new(p0.x, p0.y, p0.z);
+                        let p1 = Vec3::new(p1.x, p1.y, p1.z);
+                        let p2 = Vec3::new(p2.x, p2.y, p2.z);
+
+                        let e = Vec3::new(e.x, e.y, e.z);
+                        let area = (p1 - p0).cross(p2 - p0).norm() * e.luminance();
+                        lights_pdf.push(area);
+                        lights.push(Light { p0, p1, p2, emissive: Vec3::new(e.x, e.y, e.z) });
+                    }
+                },
+                _ => panic!("Unexpected emissive material parametr"),
+            }
+        }
+
+        // Compute CDF
+        let mut lights_cdf: Vec<f32> = Vec::with_capacity(lights_pdf.len());
+        let mut sum: f64 = 0.0;
+        for v in lights_pdf.iter() {
+            sum += *v as f64;
+            lights_cdf.push(sum as f32);
+        }
+        lights_cdf.iter_mut().for_each(|x| *x = (*x as f64 / sum) as f32);
+
+        // Multiply by 0.5 because we used double area instead of area in the previous step.
+        // We want this value to be the sum over all triangles of Area * Emissive
+        let lights_pdf_normalization = (1.0 / (sum * 0.5)) as f32;
+
+        // Normalize pdf
+        let lights_pdf: Vec<f64> = lights_pdf.iter_mut().map(|x| *x as f64 / sum).collect();
+        let alias_table = create_alias_table(lights_pdf);
+
+
+        let lights_buffer = d3d12.upload_buffer_sync(
+            cast_slice(&lights),
+            d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+            .expect("Failed to upload lights buffer");
+
+        let lights_cdf_buffer = d3d12.upload_buffer_sync(
+            cast_slice(&lights_cdf),
+            d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+            .expect("Failed to upload lights cdf buffer");
+
+        let alias_table_buffer = d3d12.upload_buffer_sync(
+            cast_slice(&alias_table),
+            d3d12::D3D12_RESOURCE_STATE_GENERIC_READ)
+            .expect("Failed to upload alias table p buffer");
+
+
+        // println!("Emissive objects: {} + {} -> {} triangles", emissive_textures, emissive_materials, emissive_triangles);
+
+
         Self {
             width: window.width(),
             height: window.height(),
@@ -904,6 +1043,12 @@ impl Ray {
             constant_buffer,
             mesh_instances,
             mesh_instances_desc_handle,
+            lights,
+            lights_cdf,
+            lights_buffer,
+            lights_cdf_buffer,
+            lights_pdf_normalization,
+            alias_table_buffer,
 
             postprocess_rs,
             postprocess_pso,
@@ -923,13 +1068,33 @@ impl Pipeline for Ray {
         self.height = height;
 
         self.uav = d3d12.create_resource(&d3d12::ResourceDesc::uav2d(
+            d3d12::DXGI_FORMAT_R32G32B32A32_FLOAT, width, height),
+            d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            d3d12::D3D12_HEAP_TYPE_DEFAULT)
+        .expect("failed to create uav resource");
+
+        d3d12.create_unordered_access_view(
+            d3d12::D3D12_UAV_DIMENSION_TEXTURE2D, &self.uav,
+            self.uav_desc_handle);
+
+        self.postprocess_buffer = d3d12.create_resource(
+            &ResourceDesc::uav2d(
                 d3d12::DXGI_FORMAT_R8G8B8A8_UNORM, width, height),
                 d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 d3d12::D3D12_HEAP_TYPE_DEFAULT)
-            .expect("Failed to create uav resource");
+            .expect("Failed to create postprocess buffer");
 
         d3d12.create_unordered_access_view(
-            d3d12::D3D12_UAV_DIMENSION_TEXTURE2D, &self.uav, self.uav_desc_handle);
+            d3d12::D3D12_UAV_DIMENSION_TEXTURE2D, &self.uav,
+            self.uav_desc_handle);
+
+        d3d12.create_shader_resource_view_tex2d(
+            &self.uav, d3d12::DXGI_FORMAT_R32G32B32A32_FLOAT,
+            self.postprocess_input_desc_handle);
+
+        d3d12.create_unordered_access_view(
+            d3d12::D3D12_UAV_DIMENSION_TEXTURE2D,
+            &self.postprocess_buffer, self.postprocess_output_desc_handle);
     }
 
     fn render(&mut self, d3d12: &d3d12::Context, frame: &d3d12::Frame,
@@ -943,6 +1108,8 @@ impl Pipeline for Ray {
             constants.samples = self.samples;
             dispatch = true;
         }
+        constants.num_lights = self.lights.len() as u32;
+        constants.lights_pdf_normalization = self.lights_pdf_normalization;
 
         let command_list = d3d12.create_graphics_command_list(frame)
             .expect("Failed to create command list");
@@ -972,11 +1139,17 @@ impl Pipeline for Ray {
                     .expect("Failed to write constants");
 
                 command_list.SetComputeRootSignature(&self.rs);
-                command_list.SetComputeRootDescriptorTable(
-                    0, d3d12.csu_descriptor_heap.heap
+                command_list.SetComputeRootDescriptorTable(0,
+                    d3d12.csu_descriptor_heap.heap
                     .GetGPUDescriptorHandleForHeapStart());
                 command_list.SetComputeRootConstantBufferView(1,
                     self.constant_buffer.get_gpu_virtual_address(frame_index));
+                command_list.SetComputeRootShaderResourceView(2,
+                    self.lights_buffer.GetGPUVirtualAddress());
+                command_list.SetComputeRootShaderResourceView(3,
+                    self.lights_cdf_buffer.GetGPUVirtualAddress());
+                command_list.SetComputeRootShaderResourceView(4,
+                    self.alias_table_buffer.GetGPUVirtualAddress());
 
                 command_list.SetPipelineState1(&self.state_object);
                 command_list.DispatchRays(&ray_desc);
@@ -1041,6 +1214,101 @@ impl Pipeline for Ray {
         }
 
         d3d12.execute_command_lists(&[Some(command_list.into())]);
+    }
+
+    fn capture_screenshot(&mut self, d3d12: &d3d12::Context,
+        constants: &SceneConstants) -> Option<(String, Vec<Vec3>)> {
+        // Create a resource for readback
+        let readback_pitch =
+            (self.width * 16 + d3d12::D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1)
+            & !(d3d12::D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+        let readback_size = self.height as usize * readback_pitch as usize;
+
+        let readback_resource = d3d12.create_mappable_resource(readback_size,
+            d3d12::D3D12_HEAP_TYPE_READBACK)?;
+
+        // Copy from device resource to readback resource
+        let readback_loc = d3d12::D3D12_TEXTURE_COPY_LOCATION {
+            pResource: Some(readback_resource.res.clone()),
+            Type: d3d12::D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+            Anonymous: d3d12::D3D12_TEXTURE_COPY_LOCATION_0 {
+                PlacedFootprint: d3d12::D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                    Footprint: d3d12::D3D12_SUBRESOURCE_FOOTPRINT {
+                        Format: d3d12::DXGI_FORMAT_R32G32B32A32_FLOAT,
+                        Width: self.width,
+                        Height: self.height,
+                        Depth: 1,
+                        RowPitch: readback_pitch,
+                    },
+                    ..Default::default()
+                }
+            }
+        };
+
+        let src_loc = d3d12::D3D12_TEXTURE_COPY_LOCATION {
+            pResource: Some(self.uav.clone()),
+            Type: d3d12::D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: d3d12::D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            }
+        };
+
+        d3d12.wait_idle();
+        unsafe {
+            let before = [ ResourceBarrier::transition(&self.uav,
+                d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                d3d12::D3D12_RESOURCE_STATE_COPY_SOURCE) ];
+
+            let after = [ ResourceBarrier::transition(&self.uav,
+                d3d12::D3D12_RESOURCE_STATE_COPY_SOURCE,
+                d3d12::D3D12_RESOURCE_STATE_UNORDERED_ACCESS) ];
+
+            d3d12.sync_command_list.ResourceBarrier(&before);
+            d3d12.sync_command_list.CopyTextureRegion(&readback_loc, 0, 0, 0,
+                &src_loc, null());
+            d3d12.sync_command_list.ResourceBarrier(&after);
+
+            d3d12::drop_barriers(before);
+            d3d12::drop_barriers(after);
+        }
+        d3d12.wait_sync_commands();
+
+        // Map resource and read data
+        let mut data: Vec<Vec4> = vec![Vec4::new(0., 0., 0., 0.);
+                                 (self.width * self.height) as  usize];
+
+        readback_resource.read_with(|map: &[u8]| {
+            for y in 0..self.height as usize {
+                // Map row start and end in bytes
+                let map_start = y * readback_pitch as usize;
+                let map_end = map_start + self.width as usize * 16;
+
+                // Output data start and end in number of Vec4 elements
+                let data_start = y * self.width as usize;
+                let data_end = data_start + self.width as usize;
+
+                data[data_start..data_end]
+                    .copy_from_slice(cast_slice(&map[map_start..map_end]));
+            }
+        });
+
+        let name = match constants.sampling_mode {
+            0 => "light",
+            1 => "brdf",
+            2 => "mis",
+            _ => panic!(),
+        };
+
+        let image_name = format!("Bistro {}spp {}b {}",
+            self.samples, constants.bounces, name);
+
+        Some((image_name, data.iter().map(|c| {
+            if c.w > 0.0 {
+                Vec3::new(c.x, c.y, c.z) * 1.0 / c.w
+            } else {
+                Vec3::new(0., 0., 0.)
+            }
+        }).collect()))
     }
 }
 

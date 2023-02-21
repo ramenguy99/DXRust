@@ -109,3 +109,8 @@ vec3 sampleGTR2(vec2 u, float alpha) {
 float pdfGTR2(vec3 m, float alpha) {
     return evalGTR2(m.z, alpha) * m.z;
 }
+
+vec2 sampleTriangle(vec2 u) {
+    float su1 = sqrt(u.x);
+    return vec2(1.0 - su1, u.y * su1);
+}

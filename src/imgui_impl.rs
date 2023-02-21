@@ -287,7 +287,8 @@ impl Backend {
             fr.vertex_buffer_count = vtx_count + 5000;
 
             let size = fr.vertex_buffer_count * size_of::<DrawVert>();
-            let buf = d3d12.create_mappable_resource(size)?;
+            let buf =
+                d3d12.create_mappable_resource(size, D3D12_HEAP_TYPE_UPLOAD)?;
             fr.vertex_buffer = Some(buf);
         }
 
@@ -295,7 +296,8 @@ impl Backend {
             fr.index_buffer_count = idx_count + 10000;
 
             let size = fr.index_buffer_count.checked_mul(size_of::<DrawIdx>())?;
-            let buf = d3d12.create_mappable_resource(size)?;
+            let buf =
+                d3d12.create_mappable_resource(size, D3D12_HEAP_TYPE_UPLOAD)?;
             fr.index_buffer = Some(buf);
         }
 

@@ -29,6 +29,12 @@ pub struct Constants {
     pub emissive_multiplier: f32,
     pub debug: u32,
 
+    pub lights_pdf_normalization: f32,
+    pub num_lights: u32,
+    pub bounces: u32,
+    pub sampling_mode: u32,
+
+    pub use_alias_table: u32,
 }
 
 #[allow(dead_code)]
@@ -58,6 +64,24 @@ pub struct RasterMeshInstance {
     pub albedo_value: Vec4,
     pub specular_value: Vec4,
     pub emissive_value: Vec4,
+}
+
+#[allow(dead_code)]
+#[derive(Default, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct Light {
+    pub p0: Vec3,
+    pub p1: Vec3,
+    pub p2: Vec3,
+    pub emissive: Vec3,
+}
+
+#[allow(dead_code)]
+#[derive(Default, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct Alias {
+    pub p: f32,
+    pub a: u32,
 }
 
 #[allow(dead_code)]

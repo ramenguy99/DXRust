@@ -21,6 +21,13 @@ struct Constants {
     u32 samples;
     float emissive_multiplier;
     u32 debug;
+
+    float lights_pdf_normalization;
+    u32 num_lights;
+    u32 bounces;
+    u32 sampling_mode;
+
+    u32 use_alias_table;
 };
 
 struct RayMeshInstance {
@@ -49,5 +56,18 @@ struct RasterMeshInstance {
     vec4 specular_value;
     vec4 emissive_value;
 };
+
+struct Light {
+    vec3 p0;
+    vec3 p1;
+    vec3 p2;
+    vec3 emissive;
+};
+
+struct Alias {
+    float p;
+    u32 a;
+};
+
 
 #endif

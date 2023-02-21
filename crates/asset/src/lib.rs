@@ -1,8 +1,10 @@
-use std::path::Path;
+#![feature(allocator_api)]
+
+use std::{path::Path, alloc::{Allocator, Global}};
 use scene::{Scene, Deserialize};
 use std::io::Read;
 
-pub fn load_scene_from_file(path: &Path) -> Option<Scene> {
+fn load_data_from_disk(path: &Path) -> Option<Vec<u8>> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut data: Vec<u8> = Vec::new();
     file.read_to_end(&mut data).ok()?;
@@ -23,8 +25,26 @@ pub fn load_scene_from_file(path: &Path) -> Option<Scene> {
         total_size += u_size;
     }
 
-    let buf = &mut &buf[..total_size];
-    let scene = Scene::deserialize(buf);
+    buf.truncate(total_size);
+    Some(buf)
+}
+
+pub fn load_scene_from_file(path: &Path) -> Option<Scene> {
+    let buf = load_data_from_disk(path)?;
+
+    let mut buf = &buf[..];
+    let scene = Scene::<Global>::deserialize(&mut buf);
+    assert!(buf.len() == 0);
+
+    Some(scene)
+}
+
+pub fn load_scene_from_file_with_allocator<A: Allocator + Copy>(path: &Path, a: A) -> Option<Box<Scene<A>, A>> {
+    let buf = load_data_from_disk(path)?;
+
+    let mut buf = &buf[..];
+    let mut scene = Box::new_in(Scene::<A>::new_in(a), a);
+    *scene = Scene::deserialize_in(&mut buf, a);
     assert!(buf.len() == 0);
 
     Some(scene)

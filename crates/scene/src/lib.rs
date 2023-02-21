@@ -1,3 +1,7 @@
+#![feature(allocator_api)]
+
+use std::alloc::{Global, Allocator};
+
 use math::{
     vec::{Vec2, Vec3, Vec4},
     mat::Mat4,
@@ -9,21 +13,21 @@ pub use camera::*;
 use bytemuck::{bytes_of, cast_slice, Pod, pod_read_unaligned};
 
 #[derive(Debug)]
-pub struct Mesh {
-    pub positions: Vec<Vec3>,
-    pub normals: Vec<Vec3>,
-    pub tangents: Vec<Vec3>,
-    pub uvs: Vec<Vec2>,
-    pub indices: Vec<u32>,
+pub struct Mesh<A: Allocator + Copy=Global> {
+    pub positions: Vec<Vec3, A>,
+    pub normals: Vec<Vec3, A>,
+    pub tangents: Vec<Vec3, A>,
+    pub uvs: Vec<Vec2, A>,
+    pub indices: Vec<u32, A>,
 
     pub transform: Mat4,
     pub material: Material,
 }
 
 #[derive(Debug)]
-pub struct Scene {
-    pub meshes: Vec<Mesh>,
-    pub images: Vec<Image>,
+pub struct Scene<A: Allocator + Copy=Global> {
+    pub meshes: Vec<Mesh<A>, A>,
+    pub images: Vec<Image<A>, A>,
 }
 
 impl Scene {
@@ -31,6 +35,15 @@ impl Scene {
         Self {
             meshes: Vec::new(),
             images: Vec::new(),
+        }
+    }
+}
+
+impl<A: Allocator + Copy> Scene<A> {
+    pub fn new_in(a: A) -> Self {
+        Self {
+            meshes: Vec::<Mesh<A>,A>::new_in(a),
+            images: Vec::<Image<A>,A>::new_in(a),
         }
     }
 }
@@ -64,11 +77,11 @@ impl TryFrom<u32> for Format {
 }
 
 #[derive(Debug)]
-pub struct Image {
+pub struct Image<A: Allocator + Copy=Global> {
     pub width: u32,
     pub height: u32,
     pub format: Format,
-    pub data: Vec<u8>,
+    pub data: Vec<u8, A>,
 }
 
 
@@ -112,7 +125,7 @@ pub trait Serialize {
     }
 }
 
-impl Serialize for Image {
+impl<A: Allocator + Copy> Serialize for Image<A> {
     fn serialize_buf(&self, buf: &mut Vec<u8>) {
         (&self.width).serialize_buf(buf);
         (&self.height).serialize_buf(buf);
@@ -180,7 +193,7 @@ impl Serialize for Scene {
     }
 }
 
-impl<T: Pod> Serialize for Vec<T> {
+impl<T: Pod, A: Allocator> Serialize for Vec<T, A> {
     fn serialize_buf(&self, buf: &mut Vec<u8>) {
         let size = self.len() * core::mem::size_of::<T>();
         buf.extend_from_slice(&size.to_le_bytes());
@@ -201,36 +214,55 @@ impl<T: Pod> Serialize for &[T] {
     }
 }
 
-pub trait Deserialize {
+pub trait Deserialize<A: Allocator + Copy=Global> {
     type Item;
+    type AllocatorItem;
 
     fn deserialize(buf: &mut &[u8]) -> Self::Item;
+    fn deserialize_in(buf: &mut &[u8], a: A) -> Self::AllocatorItem;
+
 }
 
-impl<T: Pod> Deserialize for Vec<T> {
-    type Item = Self;
+impl<T: Pod, A: Allocator + Copy> Deserialize<A> for Vec<T, A> {
+    type Item = Vec<T>;
+    type AllocatorItem = Vec<T, A>;
 
-    fn deserialize(buf: &mut &[u8]) -> Self {
+    fn deserialize(buf: &mut &[u8]) -> Self::Item {
         let size = u64::from_le_bytes(buf[..8].try_into().unwrap()) as usize;
         let mut v = Vec::new();
         v.extend_from_slice(cast_slice(&buf[8..8 + size]));
         *buf = &buf[8 + size as usize..];
         v
     }
+
+    fn deserialize_in(buf: &mut &[u8], a: A) -> Self::AllocatorItem {
+        let size = u64::from_le_bytes(buf[..8].try_into().unwrap()) as usize;
+        let mut v = Vec::new_in(a);
+        v.extend_from_slice(cast_slice(&buf[8..8 + size]));
+        *buf = &buf[8 + size as usize..];
+        v
+    }
 }
+
 
 impl<T: Pod> Deserialize for &T {
     type Item = T;
+    type AllocatorItem = T;
 
     fn deserialize(buf: &mut &[u8]) -> T {
         let v = pod_read_unaligned(&buf[..core::mem::size_of::<T>()]);
         *buf = &buf[core::mem::size_of::<T>() as usize..];
         v
     }
+
+    fn deserialize_in(buf: &mut &[u8], _a: Global) -> T {
+        <&T>::deserialize(buf)
+    }
 }
 
 impl Deserialize for MaterialParameter {
     type Item = MaterialParameter;
+    type AllocatorItem = MaterialParameter;
 
     fn deserialize(buf: &mut &[u8]) -> Self::Item {
         let typ = <&u32>::deserialize(buf);
@@ -243,10 +275,15 @@ impl Deserialize for MaterialParameter {
             _ => panic!(),
         }
     }
+
+    fn deserialize_in(buf: &mut &[u8], _a: Global) -> Self::AllocatorItem {
+        Self::deserialize(buf)
+    }
 }
 
 impl Deserialize for Material {
     type Item = Material;
+    type AllocatorItem = Material;
 
     fn deserialize(buf: &mut &[u8]) -> Self::Item {
         Material {
@@ -256,10 +293,15 @@ impl Deserialize for Material {
             emissive:   MaterialParameter::deserialize(buf),
         }
     }
+
+    fn deserialize_in(buf: &mut &[u8], _a: Global) -> Self::AllocatorItem {
+        Self::deserialize(buf)
+    }
 }
 
-impl Deserialize for Mesh {
-    type Item = Self;
+impl<A: Allocator + Copy> Deserialize<A> for Mesh<A> {
+    type Item = Mesh;
+    type AllocatorItem = Mesh<A>;
 
     fn deserialize(buf: &mut &[u8]) -> Mesh {
         Mesh {
@@ -273,11 +315,25 @@ impl Deserialize for Mesh {
             material: Material::deserialize(buf),
         }
     }
+
+    fn deserialize_in(buf: &mut &[u8], a: A) -> Mesh<A> {
+        Mesh {
+            positions: Vec::<Vec3, A>::deserialize_in(buf, a),
+            normals: Vec::<Vec3, A>::deserialize_in(buf, a),
+            tangents: Vec::<Vec3, A>::deserialize_in(buf, a),
+            uvs: Vec::<Vec2, A>::deserialize_in(buf, a),
+            indices: Vec::<u32, A>::deserialize_in(buf, a),
+
+            transform: <&Mat4>::deserialize(buf),
+            material: Material::deserialize(buf),
+        }
+    }
 }
 
 
-impl Deserialize for Image {
-    type Item = Self;
+impl<A: Allocator + Copy> Deserialize<A> for Image<A> {
+    type Item = Image;
+    type AllocatorItem = Image<A>;
 
     fn deserialize(buf: &mut &[u8]) -> Image {
         Image {
@@ -287,22 +343,52 @@ impl Deserialize for Image {
             data: Vec::<u8>::deserialize(buf),
         }
     }
+
+    fn deserialize_in(buf: &mut &[u8], a: A) -> Image<A> {
+        Image {
+            width: <&u32>::deserialize(buf),
+            height: <&u32>::deserialize(buf),
+            format: <&u32>::deserialize(buf).try_into().unwrap(),
+            data: Vec::<u8, A>::deserialize_in(buf, a),
+        }
+    }
 }
 
-impl Deserialize for Scene {
-    type Item = Self;
+impl<A: Allocator + Copy> Deserialize<A> for Scene<A> {
+    type Item = Scene;
+    type AllocatorItem = Scene<A>;
 
     fn deserialize(buf: &mut &[u8]) -> Scene {
         let meshes_count = <&u64>::deserialize(buf);
         let mut meshes = Vec::with_capacity(meshes_count as usize);
         for _ in 0..meshes_count {
-            meshes.push(Mesh::deserialize(buf));
+            meshes.push(Mesh::<Global>::deserialize(buf));
         }
 
         let images_count = <&u64>::deserialize(buf);
         let mut images = Vec::with_capacity(images_count as usize);
         for _ in 0..images_count {
-            images.push(Image::deserialize(buf));
+            images.push(Image::<Global>::deserialize(buf));
+        }
+
+        Scene {
+            meshes,
+            images,
+        }
+    }
+
+
+    fn deserialize_in(buf: &mut &[u8], a: A) -> Scene<A> {
+        let meshes_count = <&u64>::deserialize(buf);
+        let mut meshes = Vec::with_capacity_in(meshes_count as usize, a);
+        for _ in 0..meshes_count {
+            meshes.push(Mesh::deserialize_in(buf, a));
+        }
+
+        let images_count = <&u64>::deserialize(buf);
+        let mut images = Vec::with_capacity_in(images_count as usize, a);
+        for _ in 0..images_count {
+            images.push(Image::deserialize_in(buf, a));
         }
 
         Scene {

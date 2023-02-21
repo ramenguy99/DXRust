@@ -151,6 +151,10 @@ macro_rules! vec3_utils_impl {
 
                 (theta, phi)
             }
+
+            pub fn luminance(self) -> $t {
+                self.dot($v::new(0.212671, 0.715160, 0.072169))
+            }
         }
     }
 }

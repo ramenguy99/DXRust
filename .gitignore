@@ -8,3 +8,7 @@ Cargo.lock
 unused
 notes.txt
 test.scene
+build.bat
+renders
+plot.py
+*.lz4

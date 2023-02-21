@@ -11,6 +11,8 @@ use core::ffi::c_void;
 use core::cell::Cell;
 use core::mem::size_of;
 
+use bytemuck::{Pod, cast_slice};
+
 
 use math::mat::Mat4;
 pub use windows::Win32::Graphics::{
@@ -183,7 +185,7 @@ impl Context {
             factory.CreateSwapChainForHwnd(&command_queue,
                                            window.handle,
                                            &swapchain_desc,
-                                           std::ptr::null(),
+                                           core::ptr::null(),
                                            None).ok()?
         }.cast().ok()?;
 
@@ -571,19 +573,12 @@ impl Context {
     }
 
     pub fn wait_idle(&self) -> Option<()> {
-        // TODO: double check this is correct with the new wait logic.
-        // we should probably also set self.fence_value here
-        let value = unsafe {
-            let value = self.fence.GetCompletedValue() + 1;
-            self.command_queue.Signal(&self.fence, value).ok()?;
-            self.fence.SetEventOnCompletion(value, self.fence_event).ok()?;
-            WaitForSingleObjectEx(self.fence_event, INFINITE, BOOL(0));
-            value
-        };
-
-        // Reset all frame fence values
-        for f in self.frames.iter() {
-            f.fence_value.set(value);
+        unsafe {
+            if self.fence.GetCompletedValue() < self.fence_value.get() {
+                self.fence.SetEventOnCompletion(self.fence_value.get(),
+                                                self.fence_event).ok()?;
+                WaitForSingleObjectEx(self.fence_event, INFINITE, BOOL(0));
+            }
         }
 
         Some(())
@@ -614,6 +609,13 @@ impl Context {
         }
     }
 
+    // pub fn readback_tex2d_sync(&self, resource: &ID3D12Resource,
+    //     width: u32, height: u32, data: &mut [u8]) -> Option<()> {
+
+    //     self.
+    //     Some(())
+    // }
+
     pub fn upload_tex2d_sync(&self, data: &[u8], width: u32, height: u32,
                           format: DXGI_FORMAT, state: D3D12_RESOURCE_STATES)
     -> Option<ID3D12Resource> {
@@ -622,7 +624,9 @@ impl Context {
             & !(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
         let upload_size = height as usize * upload_pitch as usize;
 
-        let upload_resource = self.create_mappable_resource(upload_size)?;
+        let upload_resource =
+            self.create_mappable_resource(upload_size, D3D12_HEAP_TYPE_UPLOAD)?;
+
         upload_resource.write_with(|map| {
             for y in 0..height as usize {
                 let map_start = y * upload_pitch as usize;
@@ -695,7 +699,8 @@ impl Context {
         }
 
 
-        let upload_buffer = self.create_mappable_resource(data.len())?;
+        let upload_buffer = self.create_mappable_resource(data.len(),
+                                                          D3D12_HEAP_TYPE_UPLOAD)?;
         upload_buffer.write_with(|map| map.copy_from_slice(data));
 
         let dest_buffer =
@@ -973,11 +978,11 @@ impl Context {
         })
     }
 
-    pub fn create_mappable_resource(&self, size: usize)
-        -> Option<MappableResource> {
+    pub fn create_mappable_resource(&self, size: usize,
+        heap_type: D3D12_HEAP_TYPE) -> Option<MappableResource> {
         let res = self.create_resource(&ResourceDesc::buffer(size),
-                                       D3D12_RESOURCE_STATE_GENERIC_READ,
-                                       D3D12_HEAP_TYPE_UPLOAD)?;
+                                       D3D12_RESOURCE_STATE_COMMON,
+                                       heap_type)?;
         Some(MappableResource {
             res,
             size,
@@ -1202,6 +1207,14 @@ impl MappableResource {
     pub fn write_with<F: FnOnce(&mut [u8])>(&self, func: F) -> Option<()> {
         let map = unsafe { self.map(0, self.size)? };
         func(map);
+        unsafe { self.unmap(); }
+        Some(())
+    }
+
+
+    pub fn read_with<T: Pod, F: FnOnce(&[T])>(&self, func: F) -> Option<()> {
+        let map = unsafe { self.map(0, self.size)? };
+        func(cast_slice(map));
         unsafe { self.unmap(); }
         Some(())
     }
