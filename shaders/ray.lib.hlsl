@@ -100,6 +100,7 @@ inline void GenerateCameraRay(uint2 index, float2 jitter, out float3 origin, out
 #define LIGHT_SAMPLING 0
 #define BRDF_SAMPLING 1
 #define MIS 2
+#define RIS 3
 
 [shader("raygeneration")]
 void RayGeneration()
@@ -166,6 +167,67 @@ void RayGeneration()
 void Miss(inout HitInfo payload)
 {
     payload.distance = -1.0;
+}
+
+
+struct LightSample {
+    vec3 radiance;
+    vec3 direction;        // From shaded point to light
+    float sample_weight;
+    float shadow_distance; // Max distance to use for shadow ray
+    bool delta_light;
+};
+
+void sampleSun(inout LightSample s) {
+    s.direction = -g_constants.light_direction;
+    s.radiance = g_constants.light_radiance;
+    s.shadow_distance = 100000.0;
+    s.sample_weight = 1.0;
+    s.delta_light = true;
+}
+
+void sampleAreaLights(inout LightSample s, vec3 position, vec4 u) {
+    int l = 0;
+    if (!g_constants.use_alias_table) {
+        // Binary search for the smallest v with v > u.y
+        int r = g_constants.num_lights - 1;
+        while(l < r) {
+            int mid = (r + l) / 2;
+            if(lights_cdf_buffer[mid] < u.y) {
+                l = mid + 1;
+            } else {
+                r = mid;
+            }
+        }
+    } else {
+        // Lookup into alias table
+        uint i = clamp((uint)(u.x * g_constants.num_lights), 0, g_constants.num_lights - 1);
+        if(u.y <= alias_table[i].p) {
+            l = i;
+        } else {
+            l = alias_table[i].a;
+        }
+    }
+    Light light = lights_buffer[l];
+
+    float pdf = luminance(light.emissive) * g_constants.lights_pdf_normalization;
+
+    vec2 tri_uv = sampleTriangle(u.zw);
+    vec3 e1 = light.p1 - light.p0;
+    vec3 e2 = light.p2 - light.p0;
+    vec3 p = e1 * tri_uv.x + e2 * tri_uv.y + light.p0;
+    vec3 n = normalize(cross(e2, e1));
+    vec3 radiance = light.emissive * g_constants.emissive_multiplier;
+
+    vec3 v = p - position;
+    float dist2 = dot(v, v);
+    float d = sqrt(dist2);
+
+    s.direction = v / d;
+    s.radiance = radiance;
+    s.sample_weight = max(dot(-s.direction, n), 0.0f) / (pdf * dist2);
+    s.shadow_distance = d - 1.0e-3;
+    s.delta_light = false;
 }
 
 [shader("closesthit")]
@@ -278,110 +340,88 @@ void ClosestHit(inout HitInfo payload, in BuiltInTriangleIntersectionAttributes 
         frame = frameFromNormal(N);
     }
 
-    vec3 wo = toLocal(frame, -direction);
-
-    vec4 u = rand4(payload.seed);
-
     // BRDF
     float roughness = max(specular.r, 0.05);
     float metallic = specular.g;
     float alpha = square(roughness);
+    vec3 wo = toLocal(frame, -direction);
 
-    // Direct lighting
-    vec3 radiance;
-    vec3 L;
-    RayDesc shadow_ray;
-    float one_over_light_pdf;
-    bool delta_light;
+    vec4 u = rand4(payload.seed);
+    LightSample light_sample;
+    if(g_constants.sampling_mode == BRDF_SAMPLING || u.x < SUN_P) {
+        sampleSun(light_sample);
+        light_sample.sample_weight *= g_constants.sampling_mode == BRDF_SAMPLING ? 1.0 : 1.0 / SUN_P;
+    } else {
+        u.x = (u.x - SUN_P) / (1.0 - SUN_P);
+        if(g_constants.sampling_mode == RIS) {
+            vec4 y = 0;
+            float w_sum = 0;
+            uint M = max(g_constants.ris_count / ((payload.bounce + 1) * (payload.bounce + 1)), 1);
 
-    if(g_constants.sampling_mode != BRDF_SAMPLING) {
-        if(u.x < SUN_P) {
-            // Sample the sun
-            L = -g_constants.light_direction;
-            radiance = g_constants.light_radiance;
-            shadow_ray.Origin = position;
-            shadow_ray.Direction = L;
-            shadow_ray.TMin = 1.0e-3;
-            shadow_ray.TMax = 100000.0;
-            one_over_light_pdf = 1.0 / SUN_P;
-            delta_light = true;
-        } else {
-            int l = 0;
-            if (!g_constants.use_alias_table) {
-                // Binary search for the smallest v with v > u.y
-                int r = g_constants.num_lights - 1;
-                while(l < r) {
-                    int mid = (r + l) / 2;
-                    if(lights_cdf_buffer[mid] < u.y) {
-                        l = mid + 1;
-                    } else {
-                        r = mid;
-                    }
+            for(int i = 0; i < M; i++) {
+                sampleAreaLights(light_sample, position, u);
+                vec3 wi = toLocal(frame, light_sample.direction);
+                vec3 f = evalPrincipledBrdf(alpha, metallic, albedo, wo, wi);
+                float target_pdf = luminance(f * light_sample.radiance * max(dot(N, light_sample.direction), 0));
+                float source_pdf = light_sample.sample_weight;
+                float w = target_pdf * source_pdf;
+
+                w_sum += w;
+                if(rand(payload.seed) < w / w_sum) {
+                    y = u;
                 }
-            } else {
-                // Lookup into alias table
-                u.x = (u.x - SUN_P) / (1.0 - SUN_P);
-                uint i = clamp((uint)(u.x * g_constants.num_lights), 0, g_constants.num_lights - 1);
-                if(u.y <= alias_table[i].p) {
-                    l = i;
-                } else {
-                    l = alias_table[i].a;
-                }
+                u = rand4(payload.seed);
             }
 
-            Light light = lights_buffer[l];
-            float pdf = luminance(light.emissive) * g_constants.lights_pdf_normalization;
-
-            vec2 tri_uv = sampleTriangle(u.zw);
-            vec3 e1 = light.p1 - light.p0;
-            vec3 e2 = light.p2 - light.p0;
-            vec3 p = e1 * tri_uv.x + e2 * tri_uv.y + light.p0;
-            vec3 n = normalize(cross(e2, e1));
-
-            vec3 v = p - position;
-            float dist2 = dot(v, v);
-            float d = sqrt(dist2);
-
-            L = v / d;
-            radiance = light.emissive * g_constants.emissive_multiplier;
-            one_over_light_pdf = max(dot(-L, n), 0.0f) / ((1.0f - SUN_P) * pdf * dist2);
-
-            shadow_ray.Origin = position;
-            shadow_ray.Direction = L;
-            shadow_ray.TMin = 1.0e-3;
-            shadow_ray.TMax = d - 1.0e-3;
-            delta_light = false;
-        }
-
-        HitInfo shadow_payload = {
-            vec3(0, 0, 0),
-            vec3(0, 0, 0),
-            vec3(0, 0, 0),
-            0.0,
-            uvec4(0, 0, 0, 0),
-            0,
-            0.0,
-        };
-
-        // Shadowing
-        TraceRay(scene,
-            RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
-            RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, ~0, 0, 1, 0,
-            shadow_ray, shadow_payload);
-
-        if(shadow_payload.distance < 0.0) {
-            vec3 wi = toLocal(frame, L);
+            sampleAreaLights(light_sample, position, y);
+            vec3 wi = toLocal(frame, light_sample.direction);
             vec3 f = evalPrincipledBrdf(alpha, metallic, albedo, wo, wi);
-            float w = one_over_light_pdf;
-            if (!delta_light && g_constants.sampling_mode == MIS) {
-                float brdf_pdf = pdfPrincipledBrdf(alpha, metallic, wi, wo);
-                float light_pdf = 1.0f / one_over_light_pdf;
-                w = balance_heuristic(brdf_pdf, light_pdf);
-            }
-            payload.color += payload.throughput * f * radiance * max(dot(N, L), 0) * w;
+
+            float target_pdf_y = luminance(f * light_sample.radiance * max(dot(N, light_sample.direction), 0));
+            light_sample.sample_weight = (1.0 / target_pdf_y) * (w_sum / M);
+
+            light_sample.sample_weight *= 1.0f / (1.0 - SUN_P);
+
+        } else {
+            sampleAreaLights(light_sample, position, u);
+            light_sample.sample_weight *= 1.0f / (1.0 - SUN_P);
         }
     }
 
+    RayDesc shadow_ray;
+    shadow_ray.Origin = position;
+    shadow_ray.Direction = light_sample.direction;
+    shadow_ray.TMin = 1.0e-3;
+    shadow_ray.TMax = light_sample.shadow_distance;
+
+    HitInfo shadow_payload = {
+        vec3(0, 0, 0),
+        vec3(0, 0, 0),
+        vec3(0, 0, 0),
+        0.0,
+        uvec4(0, 0, 0, 0),
+        0,
+        0.0,
+    };
+
+    // Shadowing
+    TraceRay(scene,
+        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
+        RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, ~0, 0, 1, 0,
+        shadow_ray, shadow_payload);
+
+    // Shading
+    if(shadow_payload.distance < 0.0) {
+        vec3 wi = toLocal(frame, light_sample.direction);
+        vec3 f = evalPrincipledBrdf(alpha, metallic, albedo, wo, wi);
+        float w = light_sample.sample_weight;
+        if (!light_sample.delta_light && g_constants.sampling_mode == MIS) {
+            float brdf_pdf = pdfPrincipledBrdf(alpha, metallic, wi, wo);
+            float light_pdf = 1.0f / light_sample.sample_weight;
+            w = balance_heuristic(brdf_pdf, light_pdf);
+        }
+        payload.color += payload.throughput * f * light_sample.radiance * max(dot(N, light_sample.direction), 0) * w;
+    }
 
     // Brdf sampling
     u.xy = rand2(payload.seed);

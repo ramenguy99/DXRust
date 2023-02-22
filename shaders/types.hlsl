@@ -27,6 +27,7 @@ struct Constants {
     u32 bounces;
     u32 sampling_mode;
 
+    u32 ris_count;
     u32 use_alias_table;
 };
 

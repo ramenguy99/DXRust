@@ -6,8 +6,10 @@ from pycparser import c_ast, parse_file
 SHADERS_SOURCE_DIR="shaders"
 SHADERS_OUT_DIR="res"
 
-DXC="dxc.exe"
+DXC="dxc"
 DXC_FLAGS=""
+
+CPP_PATH="clang-cpp"
 
 version = "6_3"
 shader_types = {
@@ -62,7 +64,7 @@ rs.write('#[allow(unused_imports)]\nuse math::{vec::{Vec2, Vec3, Vec4}, mat::Mat
 rs.write('use crate::d3d12::Shader;\n')
 rs.write("\n")
 
-ast = parse_file("shaders/types.hlsl", use_cpp=True, cpp_path="C:/Libs/LLVM/bin/clang-cpp.exe",
+ast = parse_file("shaders/types.hlsl", use_cpp=True, cpp_path=CPP_PATH,
         cpp_args=[
             "-Dfloat2=int",
             "-Dfloat3=int",
@@ -76,7 +78,6 @@ ast = parse_file("shaders/types.hlsl", use_cpp=True, cpp_path="C:/Libs/LLVM/bin/
             "-Dfloat3x3=int",
             "-Dfloat4x4=int",
             "-Duint=int",
-
         ]
     )
 

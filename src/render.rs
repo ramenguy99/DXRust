@@ -12,7 +12,7 @@ use crate::shaders::{self, RayMeshInstance, RasterMeshInstance, Light};
 pub use crate::shaders::Constants as SceneConstants;
 use crate::win32;
 
-const MAX_SAMPLES: u32 = 512;
+pub const MAX_SAMPLES: u32 = 256;
 
 pub trait Pipeline {
     fn resize(&mut self, d3d12: &d3d12::Context, width: u32, height:u32);
@@ -23,6 +23,10 @@ pub trait Pipeline {
     fn capture_screenshot(&mut self, _d3d12: &d3d12::Context, _constants: &SceneConstants)
         -> Option<(String, Vec<Vec3>)> {
         None
+    }
+
+    fn sample_count(&self) -> u32 {
+        0
     }
 }
 
@@ -1293,9 +1297,10 @@ impl Pipeline for Ray {
         });
 
         let name = match constants.sampling_mode {
-            0 => "light",
-            1 => "brdf",
-            2 => "mis",
+            0 => String::from("light"),
+            1 => String::from("brdf"),
+            2 => String::from("mis"),
+            3 => format!("ris ({})", constants.ris_count),
             _ => panic!(),
         };
 
@@ -1309,6 +1314,10 @@ impl Pipeline for Ray {
                 Vec3::new(0., 0., 0.)
             }
         }).collect()))
+    }
+
+    fn sample_count(&self) -> u32 {
+        self.samples
     }
 }
 

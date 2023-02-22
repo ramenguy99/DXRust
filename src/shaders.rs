@@ -34,6 +34,7 @@ pub struct Constants {
     pub bounces: u32,
     pub sampling_mode: u32,
 
+    pub ris_count: u32,
     pub use_alias_table: u32,
 }
 

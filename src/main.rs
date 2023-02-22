@@ -36,6 +36,39 @@ macro_rules! debug_break {
     }
 }
 
+pub fn screenshot(scene: &mut Box<dyn Pipeline>, d3d12: &d3d12::Context,
+    constants: &SceneConstants, width: u32, height: u32) {
+
+    if let Some((name, data)) = scene.capture_screenshot(&d3d12, &constants){
+        if let Ok(stream) = std::net::TcpStream::connect("127.0.0.1:14158") {
+            let mut client = TevClient::wrap(stream);
+
+            let channel_names = ["R", "G", "B"];
+            client.send(PacketCreateImage {
+                image_name: &name,
+                grab_focus: false,
+                width: width,
+                height: height,
+                channel_names: &channel_names,
+            }).unwrap();
+
+            client.send(PacketUpdateImage {
+                image_name: &name,
+                grab_focus: false,
+                channel_names: &channel_names,
+                channel_offsets: &[0, 1, 2],
+                channel_strides: &[3, 3, 3],
+                x: 0,
+                y: 0,
+                width: width,
+                height: height,
+                data: cast_slice(&data),
+            }).unwrap();
+        }
+    }
+}
+
+
 fn main() {
     use std::path::Path;
 
@@ -158,8 +191,9 @@ fn main() {
         film_dist: 0.7,
         emissive_multiplier: 100.0,
         bounces: 8,
-        sampling_mode: 2,
-        use_alias_table: 1,
+        sampling_mode: 0,
+        use_alias_table: 0,
+        ris_count: 128,
         ..Default::default()
     };
     const NIGHT: bool = false;
@@ -179,6 +213,8 @@ fn main() {
 
     println!("Total time: {:.3}s", start_time.elapsed().as_secs_f64());
 
+    let mut auto_screenshot = false;
+
     'main: loop {
         let mut reset = false;
 
@@ -192,22 +228,14 @@ fn main() {
         frame_time_index = (frame_time_index + 1) % frame_times.len();
         let dt = dt as f32;
 
-
         while let Some(event) = window.poll_events() {
             let io = imgui.io_mut();
 
             use win32::{Event::*, MouseButton};
             match event {
                 Quit => break 'main,
-                KeyPress(Some(i @ ('1' | '2' | '3' | '4' | '5' | '6' ))) => {
+                KeyPress(Some(i @ ('1' | '2' | '3' | '4'))) => {
                     let i = i.to_digit(10).unwrap() - 1;
-                    constants.debug = i;
-                    reset = true;
-                },
-
-
-                KeyPress(Some(i @ ('7' | '8' | '9'))) => {
-                    let i = i.to_digit(10).unwrap() - 7;
                     constants.sampling_mode = i;
                     reset = true;
                 },
@@ -240,34 +268,14 @@ fn main() {
                     moving = false;
                 }
 
+                KeyPress(Some('O')) => {
+                    reset = true;
+                    auto_screenshot = true;
+                }
+
                 KeyPress(Some('P')) => {
-                    if let Some((name, data)) = scene.capture_screenshot(&d3d12, &constants){
-                        if let Ok(stream) = std::net::TcpStream::connect("127.0.0.1:14158") {
-                            let mut client = TevClient::wrap(stream);
-
-                            let channel_names = ["R", "G", "B"];
-                            client.send(PacketCreateImage {
-                                image_name: &name,
-                                grab_focus: false,
-                                width: window.width(),
-                                height: window.height(),
-                                channel_names: &channel_names,
-                            }).unwrap();
-
-                            client.send(PacketUpdateImage {
-                                image_name: &name,
-                                grab_focus: false,
-                                channel_names: &channel_names,
-                                channel_offsets: &[0, 1, 2],
-                                channel_strides: &[3, 3, 3],
-                                x: 0,
-                                y: 0,
-                                width: window.width(),
-                                height: window.height(),
-                                data: cast_slice(&data),
-                            }).unwrap();
-                        }
-                    }
+                    screenshot(scene, &d3d12, &constants,
+                               window.width(), window.height());
                 }
 
                 KeyPress(Some('R')) => {
@@ -334,7 +342,6 @@ fn main() {
                 _ => {}
             }
         }
-
 
         {
             let (frame, index) = d3d12.begin_frame()
@@ -422,6 +429,7 @@ fn main() {
                         "Lights",
                         "BRDF",
                         "MIS",
+                        "RIS",
                     ];
                     if ui.combo("Sampling mode", &mut index,
                         &items, |v| Cow::from(*v)) {
@@ -429,6 +437,20 @@ fn main() {
                         reset = true;
                         constants.sampling_mode = index as u32;
                     }
+
+                    ui.input_scalar("RIS count",  &mut constants.ris_count).build();
+
+                    ui.same_line();
+                    if ui.button("+") {
+                        reset = true;
+                        constants.ris_count = (constants.ris_count * 2).min(1024);
+                    }
+                    ui.same_line();
+                    if ui.button("-") {
+                        reset = true;
+                        constants.ris_count = (constants.ris_count / 2).max(1);
+                    }
+
 
                     let mut index = constants.debug as usize;
                     let items = [
@@ -456,6 +478,15 @@ fn main() {
             imgui_impl.render(&mut imgui, &d3d12, &frame, index);
 
             d3d12.end_frame(frame, true).expect("Failed to end frame");
+
+            if auto_screenshot && scene.sample_count().is_power_of_two() {
+                screenshot(scene, &d3d12, &constants,
+                    window.width(), window.height());
+            }
+
+            if scene.sample_count() == render::MAX_SAMPLES {
+                auto_screenshot = false;
+            }
         }
         frame_index += 1;
     }
