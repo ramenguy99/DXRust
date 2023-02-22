@@ -29,7 +29,7 @@ fn load_data_from_disk(path: &Path) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-pub fn load_scene_from_file(path: &Path) -> Option<Scene> {
+pub fn load_scene_from_asset_file(path: &Path) -> Option<Scene> {
     let buf = load_data_from_disk(path)?;
 
     let mut buf = &buf[..];
@@ -39,7 +39,7 @@ pub fn load_scene_from_file(path: &Path) -> Option<Scene> {
     Some(scene)
 }
 
-pub fn load_scene_from_file_with_allocator<A: Allocator + Copy>(path: &Path, a: A) -> Option<Box<Scene<A>, A>> {
+pub fn load_scene_from_asset_file_with_allocator<A: Allocator + Copy>(path: &Path, a: A) -> Option<Box<Scene<A>, A>> {
     let buf = load_data_from_disk(path)?;
 
     let mut buf = &buf[..];

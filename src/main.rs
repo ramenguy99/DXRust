@@ -72,17 +72,12 @@ pub fn screenshot(scene: &mut Box<dyn Pipeline>, d3d12: &d3d12::Context,
 fn main() {
     use std::path::Path;
 
-    // let path = std::env::args().nth(1).unwrap_or_else(|| {
-    //     println!("Usage: {} PATH", std::env::args().nth(0).unwrap());
-    //     std::process::exit(1);
-    // });
-
-    let mut allocator = FixedBaseAllocator::new();
-
     let path = std::env::args().nth(1).unwrap_or(
-        String::from("crates/asset/bistro.lz4"));
+        String::from("res/bistro.lz4"));
 
     let start_time = Instant::now();
+
+    let mut allocator = FixedBaseAllocator::new();
     let scene = if USE_PCLIP {
         match Mapping::open(b"bistro") {
             Ok(mapping) => {
@@ -96,7 +91,7 @@ fn main() {
                     Ok(mapping) => {
                         allocator.init(mapping.data.as_mut_ptr(), mapping.data.len() as u64);
 
-                        let b = asset::load_scene_from_file_with_allocator(&Path::new(&path), &allocator)
+                        let b = asset::load_scene_from_asset_file_with_allocator(&Path::new(&path), &allocator)
                             .expect("Failed to open asset file");
                         let scene = Box::leak(b) as *mut Scene<&FixedBaseAllocator>;
 
@@ -128,7 +123,7 @@ fn main() {
         }
     } else {
         panic!();
-        // asset::load_scene_from_file(&Path::new(&path)).expect("Failed to open asset file")
+        // asset::load_scene_from_asset_file(&Path::new(&path)).expect("Failed to open asset file")
     };
 
     let mut window = win32::create_window("Rust window", 1280, 720)
@@ -191,8 +186,8 @@ fn main() {
         film_dist: 0.7,
         emissive_multiplier: 100.0,
         bounces: 8,
-        sampling_mode: 0,
-        use_alias_table: 0,
+        sampling_mode: 3,
+        use_alias_table: 1,
         ris_count: 128,
         ..Default::default()
     };

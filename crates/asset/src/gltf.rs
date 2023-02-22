@@ -30,9 +30,6 @@ pub fn import_node(blob: &Vec<u8>, scene: &mut Scene, node: gltf::Node,
     let transform = parent * local_transform;
 
     if let Some(mesh) = node.mesh() {
-
-        // println!("Node: {}", node.index());
-
         for primitive in mesh.primitives() {
 
             if let Some(acc) = primitive.indices() {
@@ -70,16 +67,6 @@ pub fn import_node(blob: &Vec<u8>, scene: &mut Scene, node: gltf::Node,
                 specular: MaterialParameter::None,
                 emissive: MaterialParameter::None,
             };
-
-            println!("{}",
-                mat.pbr_metallic_roughness().base_color_texture().unwrap().texture().source().name().unwrap());
-                // mat.emissive_factor());
-
-            /*
-            println!("{:?}", mat.pbr_metallic_roughness()
-            .base_color_texture().unwrap()
-            .texture().source().name());
-        */
 
             scene.meshes.push(Mesh {
                 positions,
@@ -125,12 +112,7 @@ pub fn import_file(path: &Path) -> Option<Scene> {
         }
     }
 
-    /*
-    // println!("Importing images");
-
     for (i, img) in gltf.images().enumerate() {
-        // println!("Image: {i}");
-
         match img.source() {
             gltf::image::Source::View { view, mime_type: _ } => {
                 let begin = view.offset();
@@ -150,7 +132,6 @@ pub fn import_file(path: &Path) -> Option<Scene> {
             _ => panic!(),
         }
     }
-    */
 
     return Some(scene);
 }
