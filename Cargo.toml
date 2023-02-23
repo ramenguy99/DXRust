@@ -12,7 +12,7 @@ scene = { path = "crates/scene" }
 asset = { path = "crates/asset" }
 
 # External
-imgui =  { path = "dependencies/imgui-rs/imgui" }
+imgui =  { version = "0.10.0"  }
 bytemuck = { version = "1.13.0" }
 tev_client = { version = "0.5.2" }
 
