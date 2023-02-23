@@ -10,6 +10,7 @@ pub struct FixedBaseAllocator {
     size: u64,
 }
 
+#[allow(unused)]
 impl FixedBaseAllocator {
     pub fn new() -> FixedBaseAllocator {
         FixedBaseAllocator {

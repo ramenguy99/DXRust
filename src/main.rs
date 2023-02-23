@@ -8,14 +8,13 @@ use std::borrow::Cow;
 use tev_client::{TevClient, PacketCreateImage, PacketUpdateImage};
 use bytemuck::cast_slice;
 
-use math::vec::{Vec2, Vec3, Vec4};
-use math::mat::{Mat4};
-use scene::{Scene, Camera, Direction};
+use math::{
+    vec::{Vec2, Vec3, Vec4},
+    mat::Mat4,
+};
+use scene::{Camera, Direction};
 use render::{Raster, Ray, Pipeline, SceneConstants};
 use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
-use pclip::Mapping;
-
-use crate::allocator::FixedBaseAllocator;
 
 mod win32;
 mod d3d12;
@@ -24,8 +23,6 @@ mod imgui_impl;
 mod render;
 
 mod allocator;
-
-const USE_PCLIP: bool = true;
 
 #[allow(unused_macros)]
 macro_rules! debug_break {
@@ -75,63 +72,27 @@ fn main() {
     let path = std::env::args().nth(1).unwrap_or(
         String::from("res/bistro.lz4"));
 
-    let start_time = Instant::now();
+    let mut scene = asset::load_scene_from_asset_file(&Path::new(&path))
+        .expect("Failed to open asset file");
 
-    let mut allocator = FixedBaseAllocator::new();
-    let scene = if USE_PCLIP {
-        match Mapping::open(b"bistro") {
-            Ok(mapping) => {
-                let scene = mapping.data.as_ptr() as *mut Scene<&FixedBaseAllocator>;
-                core::mem::forget(mapping);
-                unsafe { core::ptr::read(scene) }
-            },
-            Err(pclip::Error::NotFound) => {
-                // let data = scene.serialize();
-                match Mapping::create(b"bistro", 1 << 32, Some(2 << 40)) {
-                    Ok(mapping) => {
-                        allocator.init(mapping.data.as_mut_ptr(), mapping.data.len() as u64);
+    // Transform to z up;
+    let to_z_up = Mat4::from_columns(&[
+        Vec4::new(1., 0., 0., 0.),
+        Vec4::new(0., 0., 1., 0.),
+        Vec4::new(0., 1., 0., 0.),
+        Vec4::new(0., 0., 0., 1.),
+    ]).transpose();
 
-                        let b = asset::load_scene_from_asset_file_with_allocator(&Path::new(&path), &allocator)
-                            .expect("Failed to open asset file");
-                        let scene = Box::leak(b) as *mut Scene<&FixedBaseAllocator>;
+    for m in scene.meshes.iter_mut() {
+        m.transform = to_z_up * m.transform;
+    }
 
-                        // Assert that the scene is at the top of the mapping (we ensure this by making sure it's the first thing we allocate).
-                        assert!(scene == mapping.data.as_ptr() as *mut Scene<&FixedBaseAllocator>, "{:?} {:?}", scene, mapping.data.as_ptr());
-
-                        // Leak the mapping so that we only unmap on exit.
-                        core::mem::forget(mapping);
-
-                        // Transform to z up;
-                        let to_z_up = Mat4::from_columns(&[
-                            Vec4::new(1., 0., 0., 0.),
-                            Vec4::new(0., 0., 1., 0.),
-                            Vec4::new(0., 1., 0., 0.),
-                            Vec4::new(0., 0., 0., 1.),
-                        ]).transpose();
-
-                        let mut scene = unsafe { core::ptr::read(scene) };
-                        for m in scene.meshes.iter_mut() {
-                            m.transform = to_z_up * m.transform;
-                        }
-
-                        scene
-                    },
-                    Err(e) => panic!("Unable to create mapping: {:?}", e),
-                }
-            },
-            Err(e) => panic!("Unable to open mapping: {:?}", e),
-        }
-    } else {
-        panic!();
-        // asset::load_scene_from_asset_file(&Path::new(&path)).expect("Failed to open asset file")
-    };
 
     let mut window = win32::create_window("Rust window", 1280, 720)
         .expect("Failed to create window");
 
     let mut d3d12 = d3d12::Context::init(&window)
         .expect("Failed to initialize D3D12");
-
 
     let mut imgui = imgui::Context::create();
     imgui.set_ini_filename(None);
@@ -180,7 +141,7 @@ fn main() {
     let mut constants = SceneConstants {
         camera_position: camera_pos,
         camera_direction: camera.forward,
-        light_direction: Vec3::new(-0.496, 0.694, -0.522).normalized(), //Vec3::new(0.3, 0.3, -1.0).normalized(),
+        light_direction: Vec3::new(-0.496, 0.694, -0.522).normalized(),
         light_radiance: 0.0,
         diffuse_color: Vec3::new(0., 1., 0.),
         film_dist: 0.7,
@@ -206,10 +167,7 @@ fn main() {
     let mut moving = false;
     let mut direction = Direction::Forward;
 
-    println!("Total time: {:.3}s", start_time.elapsed().as_secs_f64());
-
     let mut auto_screenshot = false;
-
     'main: loop {
         let mut reset = false;
 
@@ -218,7 +176,8 @@ fn main() {
         timestamp = now;
 
         frame_times[frame_time_index] = dt;
-        let avg_frame_time = frame_times.iter().fold(0.0, |s, x| if *x > 0.0 { s + x } else { s }) /
+        let avg_frame_time = frame_times.iter()
+            .fold(0.0, |s, x| if *x > 0.0 { s + x } else { s }) /
             frame_times.iter().fold(0, |s, x| s + ((*x > 0.0) as u32)) as f64;
         frame_time_index = (frame_time_index + 1) % frame_times.len();
         let dt = dt as f32;
@@ -366,7 +325,8 @@ fn main() {
 
                 ui.window("Renderer")
                     .position([20., 20.], imgui::Condition::FirstUseEver)
-                    .size([380., 600.], imgui::Condition::FirstUseEver).build(|| {
+                    .size([380., 600.], imgui::Condition::FirstUseEver)
+                    .build(|| {
 
                     ui.text(format!("{:.3}ms ({:.3}fps)",
                                     avg_frame_time * 1000.0,
@@ -390,7 +350,8 @@ fn main() {
                         .speed(0.01)
                         .build_array(&ui, &mut dir) {
                         reset = true;
-                        constants.light_direction = Vec3::from_slice(&dir).normalized();
+                        constants.light_direction =
+                            Vec3::from_slice(&dir).normalized();
                     }
 
                     if imgui::Drag::new("Sun Radiance")
@@ -409,7 +370,8 @@ fn main() {
 
                     ui.separator();
                     ui.text("Settings:");
-                    if ui.input_scalar("Bounces",  &mut constants.bounces).step(1).build() {
+                    if ui.input_scalar("Bounces",  &mut constants.bounces)
+                        .step(1).build() {
                         reset = true;
                     }
 

@@ -8,11 +8,12 @@ A work in progress path tracer written in Rust using hardware accelerated raytra
 - DX12 and Win32 platform layers written from scratch
 - Rasterization pipeline developed in parallel for comparison and debugging
 - Vector math library
-- GLTF 3D models and texture loading + custom asset file format for faster load times
+- GLTF 3D models and textures loading + custom asset file format for faster load times
 - Path tracer integrator with area light and BRDF multiple importance sampling
 - Alias tables for fast light importance sampling based on emitted radiance and area
 - Next event estimation with Resampled Importance Sampling (RIS) with weighted reservoir sampling (WRS)
 - ImGui integration
+- [Tev](https://github.com/Tom94/tev) client integration to capture screenshots
 
 ## Todo
 - Spatio-Temporal reuse (ReSTIR)

@@ -10,7 +10,6 @@ edition = "2021"
 math = { path = "crates/math" }
 scene = { path = "crates/scene" }
 asset = { path = "crates/asset" }
-pclip = { path = "../pclip/pclip" }
 
 # External
 imgui =  { path = "dependencies/imgui-rs/imgui" }
